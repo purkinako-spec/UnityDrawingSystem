@@ -1,0 +1,229 @@
+// ---------------------------------------------------------
+// ScoringDiff.compute
+// Compute shader for scoring how closely a user's drawing
+// matches a reference image.  Provides three kernels:
+//   1. CSPixelDiff  – per-pixel absolute difference + heatmap
+//   2. CSReduceSum  – parallel reduction of difference values
+//   3. CSStructural – SSIM-based structural similarity
+// ---------------------------------------------------------
+
+// ---- Kernel declarations ----
+#pragma kernel CSPixelDiff
+#pragma kernel CSReduceSum
+#pragma kernel CSStructural
+
+// ---- Shared resources ----
+
+// Input textures (read-only).
+Texture2D<float4> ReferenceTex;
+Texture2D<float4> DrawnTex;
+
+// Output heatmap (read-write).
+// Red channel  = high difference, Green channel = high similarity.
+RWTexture2D<float4> ResultTex;
+
+// Structured buffer for accumulating scalar results.
+//   [0] = accumulated difference (or SSIM) sum
+//   [1] = pixel count
+RWStructuredBuffer<float> ResultBuffer;
+
+// Texture dimensions (width, height).
+uint2 _TexSize;
+
+// Window size for the SSIM structural comparison kernel.
+int _WindowSize;  // recommended default: 8
+
+
+// ================================================================
+// Helper: convert linear RGB to perceptual grayscale (ITU-R BT.601)
+// ================================================================
+float toGray(float3 rgb)
+{
+    return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
+}
+
+
+// ================================================================
+// Kernel 1 – CSPixelDiff
+// Calculate per-pixel absolute difference between the reference
+// and the drawn image. Writes a heatmap to ResultTex and
+// accumulates the total difference into ResultBuffer.
+// ================================================================
+[numthreads(8, 8, 1)]
+void CSPixelDiff(uint3 id : SV_DispatchThreadID)
+{
+    // Bounds check – skip threads outside the texture.
+    if (id.x >= _TexSize.x || id.y >= _TexSize.y)
+        return;
+
+    // Sample both textures.
+    float4 refCol   = ReferenceTex[id.xy];
+    float4 drawnCol = DrawnTex[id.xy];
+
+    // Convert to grayscale for a single-channel comparison.
+    float refGray   = toGray(refCol.rgb);
+    float drawnGray = toGray(drawnCol.rgb);
+
+    // Absolute difference in [0, 1].
+    float diff = abs(refGray - drawnGray);
+
+    // Write a heatmap colour:
+    //   Red  = large difference (bad match)
+    //   Green = small difference (good match)
+    float similarity = 1.0 - diff;
+    ResultTex[id.xy] = float4(diff, similarity, 0.0, 1.0);
+
+    // Accumulate the difference into the buffer using an atomic add.
+    // We convert the float to a fixed-point integer (multiply by a
+    // large constant) because HLSL InterlockedAdd only works on ints/uints.
+    // The CPU side divides the result by the same constant afterward.
+    uint diffFixed = (uint)(diff * 10000.0);
+    uint dummy;
+    InterlockedAdd(asuint(ResultBuffer[0]), diffFixed, dummy);
+
+    // Count every processed pixel.
+    InterlockedAdd(asuint(ResultBuffer[1]), 1u, dummy);
+}
+
+
+// ================================================================
+// Kernel 2 – CSReduceSum
+// A parallel reduction kernel that sums values already written
+// to ResultBuffer by CSPixelDiff.  After CSPixelDiff has run,
+// the CPU can read:
+//     similarity_score = 1.0 - (ResultBuffer[0] / ResultBuffer[1])
+//
+// This kernel is provided for an optional secondary reduction
+// pass when the work is split across multiple dispatches.  It
+// uses a standard workgroup shared-memory reduction.
+// ================================================================
+
+// Shared memory tile for the reduction within one thread group.
+groupshared float sharedSum[64];  // 8*8 = 64 threads per group
+
+[numthreads(64, 1, 1)]
+void CSReduceSum(uint3 groupId    : SV_GroupID,
+                 uint3 threadId   : SV_GroupThreadID,
+                 uint3 dispatchId : SV_DispatchThreadID)
+{
+    uint tid   = threadId.x;
+    uint gid   = dispatchId.x;
+    uint count = _TexSize.x * _TexSize.y;
+
+    // Each thread loads one element (or zero if out of range).
+    // We treat ResultBuffer as a flat array of per-pixel diffs that
+    // a prior pass has written starting at index 2.
+    float val = 0.0;
+    if (gid < count)
+    {
+        // Offset by 2 because [0] and [1] hold the running sum/count.
+        val = ResultBuffer[gid + 2];
+    }
+
+    sharedSum[tid] = val;
+    GroupMemoryBarrierWithGroupSync();
+
+    // Standard tree reduction within the work group.
+    for (uint stride = 32; stride > 0; stride >>= 1)
+    {
+        if (tid < stride)
+        {
+            sharedSum[tid] += sharedSum[tid + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    // Thread 0 writes the partial sum back using an atomic add.
+    if (tid == 0)
+    {
+        // Atomic float add emulated via InterlockedAdd on fixed-point.
+        uint sumFixed = (uint)(sharedSum[0] * 10000.0);
+        uint dummy;
+        InterlockedAdd(asuint(ResultBuffer[0]), sumFixed, dummy);
+    }
+}
+
+
+// ================================================================
+// Kernel 3 – CSStructural
+// SSIM-like structural comparison computed over local windows.
+// For each pixel we compute the local mean, variance, and
+// covariance of the reference and drawn images, then derive
+// the SSIM index.  Results are written per-pixel to ResultTex
+// and accumulated for an average SSIM in ResultBuffer.
+// ================================================================
+[numthreads(8, 8, 1)]
+void CSStructural(uint3 id : SV_DispatchThreadID)
+{
+    // Bounds check.
+    if (id.x >= _TexSize.x || id.y >= _TexSize.y)
+        return;
+
+    // SSIM constants.
+    // L = dynamic range of the pixel values (1.0 for normalized [0,1]).
+    const float L  = 1.0;
+    const float C1 = (0.01 * L) * (0.01 * L);  // (K1*L)^2
+    const float C2 = (0.03 * L) * (0.03 * L);  // (K2*L)^2
+
+    int halfWin = _WindowSize / 2;
+
+    // Accumulators for means, variances, and covariance.
+    float mu1       = 0.0;  // mean of reference
+    float mu2       = 0.0;  // mean of drawn
+    float sigma1Sq  = 0.0;  // variance of reference
+    float sigma2Sq  = 0.0;  // variance of drawn
+    float sigma12   = 0.0;  // covariance
+    float sampleCnt = 0.0;
+
+    // Iterate over the local window centred on this pixel.
+    for (int dy = -halfWin; dy <= halfWin; dy++)
+    {
+        for (int dx = -halfWin; dx <= halfWin; dx++)
+        {
+            int2 coord = int2(id.xy) + int2(dx, dy);
+
+            // Clamp to texture boundaries.
+            coord = clamp(coord, int2(0, 0), int2(_TexSize.x - 1, _TexSize.y - 1));
+
+            float refG   = toGray(ReferenceTex[coord].rgb);
+            float drawnG = toGray(DrawnTex[coord].rgb);
+
+            mu1 += refG;
+            mu2 += drawnG;
+
+            sigma1Sq += refG   * refG;
+            sigma2Sq += drawnG * drawnG;
+            sigma12  += refG   * drawnG;
+
+            sampleCnt += 1.0;
+        }
+    }
+
+    // Finalise statistics.
+    mu1      /= sampleCnt;
+    mu2      /= sampleCnt;
+    sigma1Sq  = (sigma1Sq / sampleCnt) - (mu1 * mu1);
+    sigma2Sq  = (sigma2Sq / sampleCnt) - (mu2 * mu2);
+    sigma12   = (sigma12  / sampleCnt) - (mu1 * mu2);
+
+    // SSIM formula.
+    float numerator   = (2.0 * mu1 * mu2 + C1) * (2.0 * sigma12 + C2);
+    float denominator = (mu1 * mu1 + mu2 * mu2 + C1) * (sigma1Sq + sigma2Sq + C2);
+
+    float ssim = numerator / denominator;
+
+    // Clamp SSIM to [0, 1] for safety (edge cases with zero variance).
+    ssim = saturate(ssim);
+
+    // Write per-pixel SSIM as a green-channel intensity.
+    // High SSIM (similar) = bright green, low SSIM = dark / red.
+    ResultTex[id.xy] = float4(1.0 - ssim, ssim, 0.0, 1.0);
+
+    // Accumulate SSIM for average computation.
+    uint ssimFixed = (uint)(ssim * 10000.0);
+    uint dummy;
+    InterlockedAdd(asuint(ResultBuffer[0]), ssimFixed, dummy);
+
+    // Count pixels (for averaging on the CPU side).
+    InterlockedAdd(asuint(ResultBuffer[1]), 1u, dummy);
+}

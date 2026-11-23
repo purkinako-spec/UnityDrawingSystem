@@ -1,0 +1,26 @@
+{
+  "name": "com.custom.drawing-system",
+  "version": "1.0.0",
+  "displayName": "Drawing System",
+  "description": "他のUnityプロジェクトに移植可能な汎用お絵描きシステム。ペンタブレット筆圧検知、レイヤー、Undo/Redo、PNG/JPG/SVGエクスポート、見本比較による採点システムを提供します。",
+  "unity": "2021.3",
+  "documentationUrl": "",
+  "keywords": [
+    "drawing",
+    "painting",
+    "canvas",
+    "brush",
+    "art",
+    "scoring"
+  ],
+  "author": {
+    "name": "Custom"
+  },
+  "samples": [
+    {
+      "displayName": "Basic Setup",
+      "description": "基本的なお絵描きキャンバスのセットアップ例",
+      "path": "Samples~/BasicSetup"
+    }
+  ]
+}

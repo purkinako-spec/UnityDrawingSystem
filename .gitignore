@@ -1,0 +1,26 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+
+# Temporary files
+*.swp
+*~
+*.tmp
+*.bak
+
+# Visual Studio / VS Code / Rider project files (if opened directly)
+.vs/
+.vscode/
+.idea/
+*.user
+*.userprefs
+*.suo
+
+# Build and export outputs
+*.orig
