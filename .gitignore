@@ -10,9 +10,10 @@ Thumbs.db
 
 # Temporary files
 *.swp
-*~
 *.tmp
 *.bak
+!Samples~/
+!Samples~/**
 
 # Visual Studio / VS Code / Rider project files (if opened directly)
 .vs/

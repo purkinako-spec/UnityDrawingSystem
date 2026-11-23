@@ -56,6 +56,20 @@
 
 ## 🚀 クイックスタート
 
+### 最速セットアップ (Prefab または Sample Scene を使う)
+
+#### 方式 A: プレハブを配置するだけ（推奨）
+1. お使いのシーンに **`Runtime/Prefabs/DrawingSystem.prefab`** をドラッグ＆ドロップするだけ！
+2. Canvas、RawImage、入力プロバイダー、手振れ補正がすべてセットアップ済みです。Play を押せばすぐに描画できます。
+
+#### 方式 B: サンプルシーンを開く
+- **`Runtime/Scenes/DrawingSystemScene.unity`** を開いて再生ボタンを押すだけで、カメラ・ライト・UI が揃ったお絵描き環境をすぐに体験できます。
+- UPM の Package Manager ウィンドウから **Samples > Import** を押してプロジェクト内にインポートすることも可能です。
+
+---
+
+### 手動でのセットアップ
+
 ### 1. UIモードでのお絵描き設定（2D）
 
 1. シーンに `Canvas` と `RawImage` を作成
