@@ -48,6 +48,7 @@ namespace DrawingSystem
     public class MouseInputProvider : InputProviderBase
     {
         private bool _isDrawing;
+        private bool _wasPressed;
         private float _lastPenTime = -10f;
         private float _lastValidPressure = 0.5f;
 
