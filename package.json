@@ -5,6 +5,10 @@
   "description": "他のUnityプロジェクトに移植可能な汎用お絵描きシステム。ペンタブレット筆圧検知、レイヤー、Undo/Redo、PNG/JPG/SVGエクスポート、見本比較による採点システムを提供します。",
   "unity": "2021.3",
   "documentationUrl": "",
+  "dependencies": {
+    "com.unity.inputsystem": "1.7.0",
+    "com.unity.ugui": "2.0.0"
+  },
   "keywords": [
     "drawing",
     "painting",
