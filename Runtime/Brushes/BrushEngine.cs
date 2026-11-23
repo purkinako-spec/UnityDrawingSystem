@@ -154,26 +154,17 @@ namespace DrawingSystem.Brushes
             Vector2 delta = toUV - fromUV;
             float distance = delta.magnitude;
 
-            if (distance < 0.00001f)
+            if (distance < 0.0001f)
             {
-                // Start and end are essentially the same point — render a single stamp.
-                float p = (fromPressure + toPressure) * 0.5f;
-                float stampSize = brush != null ? brush.GetSize(p, size) : size;
-                if (isEraser)
-                {
-                    Erase(target, brush, fromUV, p, stampSize);
-                }
-                else
-                {
-                    Stamp(target, brush, fromUV, color, p, stampSize);
-                }
-                stampPositions.Add(fromUV);
+                // 移動距離が極小の場合は前フレームで既に描画済みのため重複スタンプを防止
                 return stampPositions;
             }
 
             int numStamps = Mathf.Max(1, Mathf.CeilToInt(distance / spacingUV));
 
-            for (int i = 0; i <= numStamps; i++)
+            // fromUV は前フレームの終点で既にスタンプ済みなので i = 1 から開始し、
+            // 始点の二重スタンプやフレーム境界での重なりによる「濃い点」を防止
+            for (int i = 1; i <= numStamps; i++)
             {
                 float t = (float)i / numStamps;
                 Vector2 pos = Vector2.Lerp(fromUV, toUV, t);

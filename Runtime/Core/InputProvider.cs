@@ -47,7 +47,7 @@ namespace DrawingSystem
     [AddComponentMenu("Drawing System/Mouse Input Provider")]
     public class MouseInputProvider : InputProviderBase
     {
-        private bool _wasPressed;
+        private bool _isDrawing;
         private float _lastPenTime = -10f;
         private float _lastValidPressure = 0.5f;
 
@@ -59,19 +59,25 @@ namespace DrawingSystem
             Pen pen = Pen.current;
             if (pen != null)
             {
-                bool isPenPressed = pen.tip.isPressed || pen.eraser.isPressed;
-                bool justPenPressed = pen.tip.wasPressedThisFrame || pen.eraser.wasPressedThisFrame;
-                bool justPenReleased = pen.tip.wasReleasedThisFrame || pen.eraser.wasReleasedThisFrame;
+                bool isContact = pen.tip.isPressed || pen.eraser.isPressed;
                 float rawPressure = pen.pressure.ReadValue();
+                bool hasPressure = rawPressure > 0.005f;
+                bool isPenActive = isContact || (hasPressure && _isDrawing);
 
-                if (isPenPressed || justPenReleased || (rawPressure > 0.005f && _wasPressed))
+                if (isPenActive)
                 {
                     _lastPenTime = Time.unscaledTime;
 
                     InputPhase penPhase;
-                    if (justPenPressed || (!_wasPressed && isPenPressed)) penPhase = InputPhase.Began;
-                    else if (justPenReleased) penPhase = InputPhase.Ended;
-                    else penPhase = InputPhase.Moved;
+                    if (!_isDrawing)
+                    {
+                        penPhase = InputPhase.Began;
+                        _isDrawing = true;
+                    }
+                    else
+                    {
+                        penPhase = InputPhase.Moved;
+                    }
 
                     float pressure = rawPressure > 0.001f ? Mathf.Clamp01(rawPressure) : Mathf.Max(0.02f, _lastValidPressure * 0.3f);
                     if (rawPressure > 0.001f) _lastValidPressure = pressure;
@@ -86,7 +92,24 @@ namespace DrawingSystem
                         DeviceName = $"Pen ({pen.displayName})"
                     };
 
-                    _wasPressed = isPenPressed;
+                    RaiseInput(penData);
+                    return;
+                }
+                else if (_isDrawing)
+                {
+                    _isDrawing = false;
+                    _lastPenTime = Time.unscaledTime;
+
+                    var penData = new DrawingInputData
+                    {
+                        Position = pen.position.ReadValue(),
+                        Pressure = Mathf.Max(0.02f, _lastValidPressure * 0.2f),
+                        Tilt = pen.tilt.ReadValue(),
+                        IsEraser = pen.eraser.isPressed,
+                        Phase = InputPhase.Ended,
+                        DeviceName = $"Pen ({pen.displayName})"
+                    };
+
                     RaiseInput(penData);
                     return;
                 }
@@ -95,7 +118,7 @@ namespace DrawingSystem
             // ペン操作中・直後はWindowsが合成するマウスクリックを抑制
             if (Time.unscaledTime - _lastPenTime < 0.35f)
             {
-                _wasPressed = false;
+                _isDrawing = false;
                 return;
             }
 
@@ -103,41 +126,49 @@ namespace DrawingSystem
             if (mouse != null)
             {
                 bool isPressed = mouse.leftButton.isPressed;
-                bool justPressed = mouse.leftButton.wasPressedThisFrame;
-                bool justReleased = mouse.leftButton.wasReleasedThisFrame;
 
-                if (!isPressed && !justReleased)
+                if (!_isDrawing && isPressed)
                 {
-                    _wasPressed = false;
+                    _isDrawing = true;
+                    RaiseInput(new DrawingInputData
+                    {
+                        Position = mouse.position.ReadValue(),
+                        Pressure = 1.0f,
+                        Tilt = Vector2.zero,
+                        IsEraser = false,
+                        Phase = InputPhase.Began,
+                        DeviceName = "Mouse"
+                    });
+                    return;
+                }
+                else if (_isDrawing && isPressed)
+                {
+                    RaiseInput(new DrawingInputData
+                    {
+                        Position = mouse.position.ReadValue(),
+                        Pressure = 1.0f,
+                        Tilt = Vector2.zero,
+                        IsEraser = false,
+                        Phase = InputPhase.Moved,
+                        DeviceName = "Mouse"
+                    });
+                    return;
+                }
+                else if (_isDrawing && !isPressed)
+                {
+                    _isDrawing = false;
+                    RaiseInput(new DrawingInputData
+                    {
+                        Position = mouse.position.ReadValue(),
+                        Pressure = 1.0f,
+                        Tilt = Vector2.zero,
+                        IsEraser = false,
+                        Phase = InputPhase.Ended,
+                        DeviceName = "Mouse"
+                    });
                     return;
                 }
 
-                InputPhase phase;
-                if (justPressed || (!_wasPressed && isPressed))
-                {
-                    phase = InputPhase.Began;
-                }
-                else if (justReleased)
-                {
-                    phase = InputPhase.Ended;
-                }
-                else
-                {
-                    phase = InputPhase.Moved;
-                }
-
-                var data = new DrawingInputData
-                {
-                    Position = mouse.position.ReadValue(),
-                    Pressure = 1.0f,
-                    Tilt = Vector2.zero,
-                    IsEraser = false,
-                    Phase = phase,
-                    DeviceName = "Mouse"
-                };
-
-                _wasPressed = isPressed;
-                RaiseInput(data);
                 return;
             }
 #endif
@@ -248,8 +279,8 @@ namespace DrawingSystem
     [AddComponentMenu("Drawing System/Pen Tablet Input Provider")]
     public class PenTabletInputProvider : InputProviderBase
     {
-        private bool _wasPenPressed;
-        private bool _wasMousePressed;
+        private bool _isPenDrawing;
+        private bool _isMouseDrawing;
         private float _lastPenTime = -10f;
         private float _lastValidPressure = 0.5f;
 
@@ -260,35 +291,28 @@ namespace DrawingSystem
 
             if (pen != null)
             {
-                bool isPenPressed = pen.tip.isPressed || pen.eraser.isPressed;
-                bool justPenPressed = pen.tip.wasPressedThisFrame || pen.eraser.wasPressedThisFrame;
-                bool justPenReleased = pen.tip.wasReleasedThisFrame || pen.eraser.wasReleasedThisFrame;
+                bool isContact = pen.tip.isPressed || pen.eraser.isPressed;
                 float rawPressure = pen.pressure.ReadValue();
+                bool hasPressure = rawPressure > 0.005f;
 
-                // ペン先または消しゴムが押されている、または筆圧が感知されている、または直前のフレームから離された瞬間
-                if (isPenPressed || justPenReleased || (rawPressure > 0.005f && _wasPenPressed))
+                // ペンが接触している、または筆圧が感知されている場合は「ペンアクティブ」
+                bool isPenActive = isContact || (hasPressure && _isPenDrawing);
+
+                if (isPenActive)
                 {
                     _lastPenTime = Time.unscaledTime;
 
                     InputPhase phase;
-                    if (justPenPressed || (!_wasPenPressed && isPenPressed))
+                    if (!_isPenDrawing)
                     {
                         phase = InputPhase.Began;
-                    }
-                    else if (justPenReleased)
-                    {
-                        phase = InputPhase.Ended;
-                    }
-                    else if (isPenPressed)
-                    {
-                        phase = InputPhase.Moved;
+                        _isPenDrawing = true;
                     }
                     else
                     {
-                        phase = InputPhase.Stationary;
+                        phase = InputPhase.Moved;
                     }
 
-                    // 筆圧の計算: 0だからといって1.0fに跳ね上げない！
                     float pressure = rawPressure > 0.001f ? Mathf.Clamp01(rawPressure) : Mathf.Max(0.02f, _lastValidPressure * 0.3f);
                     if (rawPressure > 0.001f) _lastValidPressure = pressure;
 
@@ -305,18 +329,40 @@ namespace DrawingSystem
                         DeviceName = $"Pen ({pen.displayName})"
                     };
 
-                    _wasPenPressed = isPenPressed;
+                    RaiseInput(data);
+                    return;
+                }
+                else if (_isPenDrawing)
+                {
+                    // ペンが離れた瞬間
+                    _isPenDrawing = false;
+                    _lastPenTime = Time.unscaledTime;
+
+                    Vector2 tilt = pen.tilt.ReadValue();
+                    bool isEraser = pen.eraser.isPressed;
+                    float pressure = Mathf.Max(0.02f, _lastValidPressure * 0.2f);
+
+                    var data = new DrawingInputData
+                    {
+                        Position = pen.position.ReadValue(),
+                        Pressure = pressure,
+                        Tilt = tilt,
+                        IsEraser = isEraser,
+                        Phase = InputPhase.Ended,
+                        DeviceName = $"Pen ({pen.displayName})"
+                    };
+
                     RaiseInput(data);
                     return;
                 }
             }
 
-            _wasPenPressed = false;
+            _isPenDrawing = false;
 
             // ペン操作中・直後はWindowsが合成するマウスクリックを抑制
             if (Time.unscaledTime - _lastPenTime < 0.35f)
             {
-                _wasMousePressed = false;
+                _isMouseDrawing = false;
                 return;
             }
 
@@ -330,41 +376,45 @@ namespace DrawingSystem
             if (mouse == null) return;
 
             bool isPressed = mouse.leftButton.isPressed;
-            bool justPressed = mouse.leftButton.wasPressedThisFrame;
-            bool justReleased = mouse.leftButton.wasReleasedThisFrame;
 
-            if (!isPressed && !justReleased)
+            if (!_isMouseDrawing && isPressed)
             {
-                _wasMousePressed = false;
-                return;
+                _isMouseDrawing = true;
+                RaiseInput(new DrawingInputData
+                {
+                    Position = mouse.position.ReadValue(),
+                    Pressure = 1.0f,
+                    Tilt = Vector2.zero,
+                    IsEraser = false,
+                    Phase = InputPhase.Began,
+                    DeviceName = "Mouse"
+                });
             }
-
-            InputPhase phase;
-            if (justPressed || (!_wasMousePressed && isPressed))
+            else if (_isMouseDrawing && isPressed)
             {
-                phase = InputPhase.Began;
+                RaiseInput(new DrawingInputData
+                {
+                    Position = mouse.position.ReadValue(),
+                    Pressure = 1.0f,
+                    Tilt = Vector2.zero,
+                    IsEraser = false,
+                    Phase = InputPhase.Moved,
+                    DeviceName = "Mouse"
+                });
             }
-            else if (justReleased)
+            else if (_isMouseDrawing && !isPressed)
             {
-                phase = InputPhase.Ended;
+                _isMouseDrawing = false;
+                RaiseInput(new DrawingInputData
+                {
+                    Position = mouse.position.ReadValue(),
+                    Pressure = 1.0f,
+                    Tilt = Vector2.zero,
+                    IsEraser = false,
+                    Phase = InputPhase.Ended,
+                    DeviceName = "Mouse"
+                });
             }
-            else
-            {
-                phase = InputPhase.Moved;
-            }
-
-            var data = new DrawingInputData
-            {
-                Position = mouse.position.ReadValue(),
-                Pressure = 1.0f,
-                Tilt = Vector2.zero,
-                IsEraser = false,
-                Phase = phase,
-                DeviceName = "Mouse"
-            };
-
-            _wasMousePressed = isPressed;
-            RaiseInput(data);
         }
     }
 #endif

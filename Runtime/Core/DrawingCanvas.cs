@@ -328,11 +328,6 @@ namespace DrawingSystem
 
                 case InputPhase.Ended:
                 case InputPhase.Cancelled:
-                    // 終点まで滑らかに引き寄せてからストロークを完了
-                    if (isStabilizing && lastStrokeUV.HasValue)
-                    {
-                        ContinueStrokeTo(uv, pressure, input.Tilt, useEraser);
-                    }
                     isStabilizing = false;
                     EndCurrentStroke();
                     break;
