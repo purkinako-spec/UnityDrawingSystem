@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using DrawingSystem.Brushes;
 using DrawingSystem.Layers;
@@ -9,44 +11,73 @@ using DrawingSystem.Scoring;
 namespace DrawingSystem.UI
 {
     /// <summary>
-    /// Runtime control panel providing in-game/build access to all DrawingSystem parameters
-    /// previously only tweakable in the Unity Editor Inspector.
-    /// Can automatically generate standard uGUI controls at runtime if not wired in Inspector.
+    /// ビルド後の実行環境でもインスペクターで調整可能なほぼすべての機能
+    /// （ブラシ、レイヤー、カラーピッカー、採点難易度、保存、終了）を操作可能にする完全版ランタイムUI。
     /// </summary>
     [DisallowMultipleComponent]
     [AddComponentMenu("Drawing System/Runtime Control Panel")]
     public class RuntimeControlPanel : MonoBehaviour
     {
+        // ─── Inspector Fields ────────────────────────────────────────────────
         [Header("キャンバス参照")]
         [SerializeField] private DrawingCanvas targetCanvas;
 
         [Header("UI パネルの自動生成")]
-        [Tooltip("実行時にUI階層が空の場合、自動で使いやすいオーバーレイUIを動的生成します。")]
+        [Tooltip("実行時にUIを動的生成します。")]
         [SerializeField] private bool autoGenerateUI = true;
 
         [Header("表示設定")]
         [SerializeField] private bool showStats = true;
         [SerializeField] private KeyCode togglePanelKey = KeyCode.Tab;
+        [SerializeField] private float panelWidth = 330f;
 
-        // References to dynamic UI elements
+        // ─── UI References ───────────────────────────────────────────────────
         private Canvas uiCanvas;
         private GameObject panelRoot;
+        private GameObject toggleFloatingBtnGo;
         private Text statsText;
         private Text scoreText;
-        private RawImage heatmapImage;
         private Text notificationText;
-        private Slider difficultySlider;
-        private Text difficultyLabel;
+
+        // Brush
         private Slider brushSizeSlider;
         private Text brushSizeLabel;
         private Slider smoothSlider;
         private Text smoothLabel;
+        private Button eraserBtn;
+        private Image eraserBtnImg;
 
+        // HSV Color picker
+        private Slider hueSlider;
+        private Slider satSlider;
+        private Slider valSlider;
+        private Image colorPreview;
+        private Text hexLabel;
+        private float currentHue = 0f, currentSat = 0f, currentVal = 0f;
+
+        // Layer list
+        private Transform layerListContainer;
+        private Slider layerOpacitySlider;
+        private Text layerOpacityLabel;
+        private Dropdown blendModeDropdown;
+
+        // Scoring
+        private Slider difficultySlider;
+        private Text difficultyLabel;
+        private Toggle realtimeScoreToggle;
+        private Slider realtimeIntervalSlider;
+        private Text realtimeIntervalLabel;
+
+        // ─── Lifecycle ────────────────────────────────────────────────────────
         private void Awake()
         {
             if (targetCanvas == null)
             {
+#if UNITY_2023_1_OR_NEWER
                 targetCanvas = FindFirstObjectByType<DrawingCanvas>();
+#else
+                targetCanvas = FindObjectOfType<DrawingCanvas>();
+#endif
             }
         }
 
@@ -54,7 +85,11 @@ namespace DrawingSystem.UI
         {
             if (targetCanvas == null)
             {
+#if UNITY_2023_1_OR_NEWER
                 targetCanvas = FindFirstObjectByType<DrawingCanvas>();
+#else
+                targetCanvas = FindObjectOfType<DrawingCanvas>();
+#endif
             }
 
             if (autoGenerateUI)
@@ -78,31 +113,39 @@ namespace DrawingSystem.UI
 
         private void Update()
         {
-            // Toggle panel visibility
-            if (Input.GetKeyDown(togglePanelKey) && panelRoot != null)
+            // Toggle panel via Tab key
+            if (Input.GetKeyDown(togglePanelKey))
             {
-                panelRoot.SetActive(!panelRoot.activeSelf);
+                TogglePanel();
             }
 
-            // Update realtime device & pressure telemetry
+            // Realtime Device & Pressure Display
             if (showStats && statsText != null && targetCanvas != null)
             {
-                statsText.text = $"[Device: {targetCanvas.ActiveDeviceName}]  [Pressure: {targetCanvas.LastInputPressure * 100f:F0}%]  [Layers: {targetCanvas.Layers?.Layers.Count ?? 1}]";
+                int layerCount = targetCanvas.Layers?.Layers.Count ?? 1;
+                int activeIdx  = targetCanvas.Layers?.ActiveLayerIndex ?? 0;
+                statsText.text = $"[デバイス: {targetCanvas.ActiveDeviceName}]  [筆圧: {targetCanvas.LastInputPressure * 100f:F0}%]  [レイヤー: {activeIdx + 1}/{layerCount}]";
             }
         }
 
-        /// <summary>
-        /// Builds a clean, responsive runtime UI overlay dynamically without needing external prefabs.
-        /// </summary>
+        public void TogglePanel()
+        {
+            if (panelRoot != null)
+            {
+                panelRoot.SetActive(!panelRoot.activeSelf);
+            }
+        }
+
+        // ─── Build UI ─────────────────────────────────────────────────────────
         private void BuildRuntimeUI()
         {
-            // Create root UI Canvas if not already existing
+            // ── Root Canvas ──────────────────────────────────────────────────
             var canvasGo = new GameObject("DrawingSystem_RuntimeUI");
-            canvasGo.transform.SetParent(this.transform, false);
+            canvasGo.transform.SetParent(transform, false);
 
             uiCanvas = canvasGo.AddComponent<Canvas>();
             uiCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            uiCanvas.sortingOrder = 999; // On top of drawing surface
+            uiCanvas.sortingOrder = 500; // 最前面だが描画RawImageはGraphicRaycaster外なら透過
 
             var scaler = canvasGo.AddComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
@@ -111,121 +154,345 @@ namespace DrawingSystem.UI
 
             canvasGo.AddComponent<GraphicRaycaster>();
 
-            // Panel Root (Sidebar on Left / Top)
-            panelRoot = new GameObject("ControlPanelRoot");
+            // ── Floating Toggle Button (キーボードのない環境やワンタップ開閉用) ───
+            toggleFloatingBtnGo = new GameObject("PanelToggleButton");
+            toggleFloatingBtnGo.transform.SetParent(canvasGo.transform, false);
+            var btnRt = toggleFloatingBtnGo.AddComponent<RectTransform>();
+            btnRt.anchorMin = new Vector2(0, 1);
+            btnRt.anchorMax = new Vector2(0, 1);
+            btnRt.pivot = new Vector2(0, 1);
+            btnRt.anchoredPosition = new Vector2(10, -10);
+            btnRt.sizeDelta = new Vector2(110, 36);
+
+            var floatImg = toggleFloatingBtnGo.AddComponent<Image>();
+            floatImg.color = new Color(0.18f, 0.22f, 0.32f, 0.9f);
+
+            var floatBtn = toggleFloatingBtnGo.AddComponent<Button>();
+            floatBtn.targetGraphic = floatImg;
+            floatBtn.onClick.AddListener(TogglePanel);
+
+            var floatTxt = CreateLabel(toggleFloatingBtnGo.transform, "☰ パネル(Tab)", 12, FontStyle.Bold, Color.white);
+            floatTxt.alignment = TextAnchor.MiddleCenter;
+            var ftRt = floatTxt.GetComponent<RectTransform>();
+            ftRt.anchorMin = Vector2.zero; ftRt.anchorMax = Vector2.one; ftRt.sizeDelta = Vector2.zero;
+
+            // ── Outer Panel (左側フルハイト) ─────────────────────────────────
+            panelRoot = new GameObject("ControlPanel");
             panelRoot.transform.SetParent(canvasGo.transform, false);
-            var rootRt = panelRoot.AddComponent<RectTransform>();
-            rootRt.anchorMin = new Vector2(0, 0);
-            rootRt.anchorMax = new Vector2(0, 1);
-            rootRt.pivot = new Vector2(0, 0.5f);
-            rootRt.sizeDelta = new Vector2(320, 0);
-            rootRt.anchoredPosition = Vector2.zero;
+            var panelRt = panelRoot.AddComponent<RectTransform>();
+            panelRt.anchorMin = new Vector2(0, 0);
+            panelRt.anchorMax = new Vector2(0, 1);
+            panelRt.pivot     = new Vector2(0, 0.5f);
+            panelRt.sizeDelta = new Vector2(panelWidth, 0);
+            panelRt.anchoredPosition = Vector2.zero;
 
-            var bg = panelRoot.AddComponent<Image>();
-            bg.color = new Color(0.12f, 0.12f, 0.15f, 0.85f);
+            var panelBg = panelRoot.AddComponent<Image>();
+            panelBg.color = new Color(0.10f, 0.11f, 0.14f, 0.95f);
 
-            var vlg = panelRoot.AddComponent<VerticalLayoutGroup>();
-            vlg.padding = new RectOffset(14, 14, 14, 14);
+            // ── ScrollRect (スクロール可能領域) ──────────────────────────────
+            var scrollObj = new GameObject("ScrollRect");
+            scrollObj.transform.SetParent(panelRoot.transform, false);
+            var scrollRt = scrollObj.AddComponent<RectTransform>();
+            scrollRt.anchorMin = Vector2.zero;
+            scrollRt.anchorMax = Vector2.one;
+            scrollRt.sizeDelta = Vector2.zero;
+            scrollRt.offsetMin = new Vector2(0, 0);
+            scrollRt.offsetMax = new Vector2(0, -48); // 上部に少し余白
+
+            var scroll = scrollObj.AddComponent<ScrollRect>();
+            scroll.horizontal = false;
+            scroll.vertical   = true;
+            scroll.scrollSensitivity = 25f;
+            scroll.movementType = ScrollRect.MovementType.Clamped;
+
+            // Viewport
+            var vpObj = new GameObject("Viewport");
+            vpObj.transform.SetParent(scrollObj.transform, false);
+            var vpRt = vpObj.AddComponent<RectTransform>();
+            vpRt.anchorMin = Vector2.zero;
+            vpRt.anchorMax = Vector2.one;
+            vpRt.sizeDelta = Vector2.zero;
+            vpObj.AddComponent<Image>().color = Color.clear;
+            vpObj.AddComponent<Mask>().showMaskGraphic = false;
+            scroll.viewport = vpRt;
+
+            // Content Container
+            var contentObj = new GameObject("Content");
+            contentObj.transform.SetParent(vpObj.transform, false);
+            var contentRt = contentObj.AddComponent<RectTransform>();
+            contentRt.anchorMin = new Vector2(0, 1);
+            contentRt.anchorMax = new Vector2(1, 1);
+            contentRt.pivot     = new Vector2(0.5f, 1);
+            contentRt.anchoredPosition = Vector2.zero;
+            contentRt.sizeDelta = Vector2.zero;
+
+            var vlg = contentObj.AddComponent<VerticalLayoutGroup>();
+            vlg.padding = new RectOffset(12, 12, 12, 12);
             vlg.spacing = 8;
-            vlg.childForceExpandWidth = true;
+            vlg.childForceExpandWidth  = true;
             vlg.childForceExpandHeight = false;
-            vlg.childControlWidth = true;
+            vlg.childControlWidth  = true;
             vlg.childControlHeight = true;
 
-            var csf = panelRoot.AddComponent<ContentSizeFitter>();
-            csf.verticalFit = ContentSizeFitter.FitMode.Unconstrained;
+            var csf = contentObj.AddComponent<ContentSizeFitter>();
+            csf.verticalFit   = ContentSizeFitter.FitMode.PreferredSize;
+            csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
 
-            // Header Title
-            CreateLabel(panelRoot.transform, "🎨 描画システム操作パネル (Tabで開閉)", 16, FontStyle.Bold, Color.white);
+            scroll.content = contentRt;
+            Transform root = contentObj.transform;
 
-            // Stats / Device Info
-            statsText = CreateLabel(panelRoot.transform, "Device: Detecting...", 12, FontStyle.Normal, new Color(0.7f, 0.9f, 1f));
+            // ════════════════════════════════════════════════════════════════
+            // 1. ヘッダー & デバイスステータス
+            // ════════════════════════════════════════════════════════════════
+            var headRow = CreateHRow(root, 28);
+            CreateLabel(headRow.transform, "🎨 お絵描きシステム 操作盤", 15, FontStyle.Bold, Color.white);
+            var closeBtn = CreateButton(headRow.transform, "✕ 閉じる", TogglePanel);
+            closeBtn.GetComponent<LayoutElement>().minWidth = 70;
+            closeBtn.GetComponent<LayoutElement>().flexibleWidth = 0;
 
-            // Tool buttons row (Undo / Redo / Clear / Eraser)
-            var toolRow = CreateHorizontalRow(panelRoot.transform);
-            CreateButton(toolRow.transform, "↩ Undo", () => targetCanvas?.Undo());
-            CreateButton(toolRow.transform, "↪ Redo", () => targetCanvas?.Redo());
-            CreateButton(toolRow.transform, "🗑 Clear", () => targetCanvas?.Clear());
+            statsText = CreateLabel(root, "デバイス検出中...", 11, FontStyle.Normal, new Color(0.6f, 0.85f, 1f));
 
-            var eraserBtn = CreateButton(toolRow.transform, "消しゴム", null);
-            var eraserBtnImg = eraserBtn.GetComponent<Image>();
+            // ════════════════════════════════════════════════════════════════
+            // 2. 基本ツール (Undo / Redo / Clear / Eraser)
+            // ════════════════════════════════════════════════════════════════
+            CreateSectionHeader(root, "🖊 描画ツール");
+
+            var toolRow1 = CreateHRow(root, 34);
+            CreateButton(toolRow1.transform, "↩ 元に戻す", () => targetCanvas?.Undo());
+            CreateButton(toolRow1.transform, "↪ やり直す", () => targetCanvas?.Redo());
+            CreateButton(toolRow1.transform, "🗑 全消去", () => targetCanvas?.Clear());
+
+            var toolRow2 = CreateHRow(root, 34);
+            eraserBtn = CreateButton(toolRow2.transform, "消しゴム: OFF", null);
+            eraserBtnImg = eraserBtn.GetComponent<Image>();
             eraserBtn.onClick.AddListener(() =>
             {
                 if (targetCanvas == null) return;
                 targetCanvas.IsEraserMode = !targetCanvas.IsEraserMode;
-                eraserBtnImg.color = targetCanvas.IsEraserMode ? new Color(1f, 0.4f, 0.4f) : Color.white;
+                bool on = targetCanvas.IsEraserMode;
+                eraserBtnImg.color = on ? new Color(0.9f, 0.35f, 0.35f) : StyleColor.ButtonBg;
+                var txt = eraserBtn.GetComponentInChildren<Text>();
+                if (txt != null) txt.text = on ? "消しゴム: ON" : "消しゴム: OFF";
             });
 
-            // Sliders: Size & Smoothing
-            brushSizeLabel = CreateLabel(panelRoot.transform, $"ブラシ太さ: {Mathf.RoundToInt(targetCanvas?.CurrentSize ?? 12)} px", 12, FontStyle.Normal, Color.white);
-            brushSizeSlider = CreateSlider(panelRoot.transform, 1f, 100f, targetCanvas?.CurrentSize ?? 12f, val =>
+            // ════════════════════════════════════════════════════════════════
+            // 3. ブラシサイズ & 手振れ補正 & 背景色
+            // ════════════════════════════════════════════════════════════════
+            CreateSectionHeader(root, "📐 ブラシ＆キャンバス設定");
+
+            brushSizeLabel = CreateLabel(root, $"ブラシ太さ: {Mathf.RoundToInt(targetCanvas?.CurrentSize ?? 12)} px", 12, FontStyle.Normal, Color.white);
+            brushSizeSlider = CreateSlider(root, 1f, 150f, targetCanvas?.CurrentSize ?? 12f, val =>
             {
                 if (targetCanvas != null) targetCanvas.CurrentSize = val;
                 if (brushSizeLabel != null) brushSizeLabel.text = $"ブラシ太さ: {Mathf.RoundToInt(val)} px";
             });
 
-            smoothLabel = CreateLabel(panelRoot.transform, $"手振れ補正: {((targetCanvas?.Stabilization ?? 0.5f) * 100f):F0}%", 12, FontStyle.Normal, Color.white);
-            smoothSlider = CreateSlider(panelRoot.transform, 0f, 1f, targetCanvas?.Stabilization ?? 0.5f, val =>
+            smoothLabel = CreateLabel(root, $"手振れ補正 (Stabilization): {((targetCanvas?.Stabilization ?? 0.5f) * 100f):F0}%", 12, FontStyle.Normal, Color.white);
+            smoothSlider = CreateSlider(root, 0f, 1f, targetCanvas?.Stabilization ?? 0.5f, val =>
             {
                 if (targetCanvas != null) targetCanvas.Stabilization = val;
-                if (smoothLabel != null) smoothLabel.text = $"手振れ補正: {(val * 100f):F0}%";
+                if (smoothLabel != null) smoothLabel.text = $"手振れ補正 (Stabilization): {(val * 100f):F0}%";
             });
 
-            // Color Presets Row
-            CreateLabel(panelRoot.transform, "カラーパレット:", 12, FontStyle.Bold, Color.white);
-            var colorRow = CreateHorizontalRow(panelRoot.transform);
-            Color[] presets = { Color.black, Color.red, Color.blue, new Color(0.1f, 0.8f, 0.2f), Color.yellow, Color.white };
-            foreach (var col in presets)
+            // 背景色変更
+            CreateLabel(root, "キャンバス背景色:", 11, FontStyle.Normal, new Color(0.8f, 0.8f, 0.8f));
+            var bgRow = CreateHRow(root, 26);
+            Color[] bgPresets = { Color.white, new Color(0.96f, 0.94f, 0.90f), new Color(0.8f, 0.8f, 0.8f), new Color(0.18f, 0.18f, 0.18f), Color.black };
+            string[] bgNames = { "白", "紙色", "灰", "暗灰", "黒" };
+            for (int i = 0; i < bgPresets.Length; i++)
             {
-                var cBtn = CreateButton(colorRow.transform, "", () =>
+                Color bgC = bgPresets[i];
+                var btn = CreateButton(bgRow.transform, bgNames[i], () =>
                 {
-                    if (targetCanvas != null)
-                    {
-                        targetCanvas.CurrentColor = col;
-                        targetCanvas.IsEraserMode = false;
-                        if (eraserBtnImg != null) eraserBtnImg.color = Color.white;
-                    }
+                    if (targetCanvas != null) targetCanvas.BackgroundColor = bgC;
                 });
-                cBtn.GetComponent<Image>().color = col;
+                btn.GetComponent<Image>().color = bgC;
+                var t = btn.GetComponentInChildren<Text>();
+                if (t != null) t.color = (bgC.r + bgC.g + bgC.b) > 1.5f ? Color.black : Color.white;
             }
 
-            // Layer Management Section
-            CreateLabel(panelRoot.transform, "─── レイヤー操作 ───", 13, FontStyle.Bold, new Color(0.8f, 0.8f, 0.8f));
-            var layerRow = CreateHorizontalRow(panelRoot.transform);
-            CreateButton(layerRow.transform, "＋ 新規レイヤー", () =>
+            // ════════════════════════════════════════════════════════════════
+            // 4. カラーパレット & HSVカラーピッカー（完全自由変更）
+            // ════════════════════════════════════════════════════════════════
+            CreateSectionHeader(root, "🎨 カラーピッカー (色を自由に変更)");
+
+            // カラープリセット
+            var presetRow = CreateHRow(root, 28);
+            Color[] colorPresets =
+            {
+                Color.black,
+                new Color(0.85f, 0.15f, 0.15f), // 赤
+                new Color(0.15f, 0.45f, 0.95f), // 青
+                new Color(0.15f, 0.75f, 0.25f), // 緑
+                new Color(0.95f, 0.85f, 0.15f), // 黄
+                new Color(1f, 0.5f, 0.1f),      // 橙
+                new Color(0.65f, 0.2f, 0.8f),   // 紫
+                Color.white
+            };
+            foreach (var col in colorPresets)
+            {
+                var capturedCol = col;
+                var cBtn = CreateButton(presetRow.transform, "", () => ApplyColor(capturedCol));
+                cBtn.GetComponent<Image>().color = capturedCol;
+            }
+
+            // プレビュー＆HEXコード表示行
+            var colorInfoRow = CreateHRow(root, 30);
+            var prevGo = new GameObject("ColorPreview");
+            prevGo.transform.SetParent(colorInfoRow.transform, false);
+            colorPreview = prevGo.AddComponent<Image>();
+            colorPreview.color = targetCanvas?.CurrentColor ?? Color.black;
+            var prevLe = prevGo.AddComponent<LayoutElement>();
+            prevLe.minWidth = 50; prevLe.minHeight = 28; prevLe.flexibleWidth = 0;
+
+            hexLabel = CreateLabel(colorInfoRow.transform, ColorToHex(targetCanvas?.CurrentColor ?? Color.black), 13, FontStyle.Bold, Color.white);
+
+            Color.RGBToHSV(targetCanvas?.CurrentColor ?? Color.black, out currentHue, out currentSat, out currentVal);
+
+            // 色相 (Hue: 0~1)
+            CreateLabel(root, "色相 (Hue / 色の種類):", 11, FontStyle.Normal, new Color(0.8f, 0.8f, 0.8f));
+            hueSlider = CreateSlider(root, 0f, 1f, currentHue, val =>
+            {
+                currentHue = val;
+                RefreshHSVColor();
+            });
+
+            // 彩度 (Saturation: 0~1)
+            CreateLabel(root, "彩度 (Saturation / 鮮やかさ):", 11, FontStyle.Normal, new Color(0.8f, 0.8f, 0.8f));
+            satSlider = CreateSlider(root, 0f, 1f, currentSat, val =>
+            {
+                currentSat = val;
+                RefreshHSVColor();
+            });
+
+            // 明度 (Value: 0~1)
+            CreateLabel(root, "明度 (Value / 明るさ):", 11, FontStyle.Normal, new Color(0.8f, 0.8f, 0.8f));
+            valSlider = CreateSlider(root, 0f, 1f, currentVal, val =>
+            {
+                currentVal = val;
+                RefreshHSVColor();
+            });
+
+            // ════════════════════════════════════════════════════════════════
+            // 5. レイヤー管理 (一覧・選択・非表示・追加削除・上下移動・不透明度・ブレンド)
+            // ════════════════════════════════════════════════════════════════
+            CreateSectionHeader(root, "📋 レイヤー完全操作");
+
+            var layerRow1 = CreateHRow(root, 32);
+            CreateButton(layerRow1.transform, "＋ 新規追加", () =>
             {
                 targetCanvas?.Layers?.AddLayer();
                 targetCanvas?.RefreshComposite();
+                RebuildLayerList();
             });
-            CreateButton(layerRow.transform, "－ 削除", () =>
+            CreateButton(layerRow1.transform, "－ 削除", () =>
             {
                 var lm = targetCanvas?.Layers;
                 if (lm != null && lm.Layers.Count > 1)
                 {
                     lm.RemoveLayer(lm.ActiveLayerIndex);
                     targetCanvas?.RefreshComposite();
+                    RebuildLayerList();
                 }
             });
 
-            // Scoring Section
-            CreateLabel(panelRoot.transform, "─── 採点・ゲーム機能 ───", 13, FontStyle.Bold, new Color(0.8f, 0.8f, 0.8f));
+            var layerRow2 = CreateHRow(root, 30);
+            CreateButton(layerRow2.transform, "▲ レイヤーを上へ移動", () =>
+            {
+                var lm = targetCanvas?.Layers;
+                if (lm == null) return;
+                int idx = lm.ActiveLayerIndex;
+                if (idx < lm.Layers.Count - 1)
+                {
+                    lm.MoveLayer(idx, idx + 1);
+                    targetCanvas?.RefreshComposite();
+                    RebuildLayerList();
+                }
+            });
+            CreateButton(layerRow2.transform, "▼ レイヤーを下へ移動", () =>
+            {
+                var lm = targetCanvas?.Layers;
+                if (lm == null) return;
+                int idx = lm.ActiveLayerIndex;
+                if (idx > 0)
+                {
+                    lm.MoveLayer(idx, idx - 1);
+                    targetCanvas?.RefreshComposite();
+                    RebuildLayerList();
+                }
+            });
 
-            // Difficulty slider
-            float currentDiff = 0.5f;
-            if (targetCanvas?.DefaultScorerAsset is NormalizedShapeScorer nss) currentDiff = nss.Difficulty;
+            // レイヤーリストの動的コンテナ
+            var listContainer = new GameObject("LayerListContainer");
+            listContainer.transform.SetParent(root, false);
+            layerListContainer = listContainer.transform;
+            var listVlg = listContainer.AddComponent<VerticalLayoutGroup>();
+            listVlg.spacing = 3;
+            listVlg.childForceExpandWidth  = true;
+            listVlg.childForceExpandHeight = false;
+            listVlg.childControlWidth  = true;
+            listVlg.childControlHeight = true;
+            listContainer.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+            listContainer.AddComponent<LayoutElement>();
 
-            difficultyLabel = CreateLabel(panelRoot.transform, $"採点難易度: {currentDiff:F2}", 12, FontStyle.Normal, Color.white);
-            difficultySlider = CreateSlider(panelRoot.transform, 0f, 1f, currentDiff, val =>
+            // 選択中レイヤーの不透明度
+            layerOpacityLabel = CreateLabel(root, "選択中レイヤー不透明度: 100%", 12, FontStyle.Normal, Color.white);
+            layerOpacitySlider = CreateSlider(root, 0f, 1f, 1f, val =>
+            {
+                var lm = targetCanvas?.Layers;
+                if (lm?.ActiveLayer == null) return;
+                lm.ActiveLayer.Opacity = val;
+                targetCanvas?.RefreshComposite();
+                if (layerOpacityLabel != null) layerOpacityLabel.text = $"選択中レイヤー不透明度: {(val * 100f):F0}%";
+            });
+
+            // 選択中レイヤーのブレンドモード
+            CreateLabel(root, "合成モード (Blend Mode):", 12, FontStyle.Normal, Color.white);
+            blendModeDropdown = CreateDropdown(root,
+                new[] { "通常 (Normal)", "乗算 (Multiply)", "スクリーン (Screen)", "オーバーレイ (Overlay)" }, 0, idx =>
+            {
+                var lm = targetCanvas?.Layers;
+                if (lm?.ActiveLayer == null) return;
+                lm.ActiveLayer.BlendMode = (LayerBlendMode)idx;
+                targetCanvas?.RefreshComposite();
+            });
+
+            // 初期レイヤーリスト生成
+            RebuildLayerList();
+
+            // ════════════════════════════════════════════════════════════════
+            // 6. 採点・ゲーム評価システム
+            // ════════════════════════════════════════════════════════════════
+            CreateSectionHeader(root, "🎯 採点＆難易度調整");
+
+            float initDiff = 0.5f;
+            if (targetCanvas?.DefaultScorerAsset is NormalizedShapeScorer nss) initDiff = nss.Difficulty;
+
+            difficultyLabel = CreateLabel(root, $"判定厳しさ (難易度): {initDiff:F2}", 12, FontStyle.Normal, Color.white);
+            difficultySlider = CreateSlider(root, 0f, 1f, initDiff, val =>
             {
                 if (targetCanvas?.DefaultScorerAsset is NormalizedShapeScorer ns)
-                {
                     ns.Difficulty = val;
-                }
-                if (difficultyLabel != null) difficultyLabel.text = $"採点難易度: {val:F2}";
+                if (difficultyLabel != null) difficultyLabel.text = $"判定厳しさ (難易度): {val:F2}";
             });
 
-            var scoreRow = CreateHorizontalRow(panelRoot.transform);
-            CreateButton(scoreRow.transform, "🎯 採点する", () =>
+            // リアルタイム採点設定
+            var rtRow = CreateHRow(root, 28);
+            CreateLabel(rtRow.transform, "常時自動採点:", 11, FontStyle.Normal, Color.white);
+            realtimeScoreToggle = CreateToggle(rtRow.transform, targetCanvas?.EnableRealtimeScoring ?? false, isOn =>
+            {
+                if (targetCanvas != null) targetCanvas.EnableRealtimeScoring = isOn;
+            });
+
+            realtimeIntervalLabel = CreateLabel(root, $"採点間隔: {(targetCanvas?.RealtimeScoringInterval ?? 0.5f):F1} 秒", 11, FontStyle.Normal, Color.white);
+            realtimeIntervalSlider = CreateSlider(root, 0.1f, 3f, targetCanvas?.RealtimeScoringInterval ?? 0.5f, val =>
+            {
+                if (targetCanvas != null) targetCanvas.RealtimeScoringInterval = val;
+                if (realtimeIntervalLabel != null) realtimeIntervalLabel.text = $"採点間隔: {val:F1} 秒";
+            });
+
+            var scoreRow = CreateHRow(root, 36);
+            var evalBtn = CreateButton(scoreRow.transform, "🎯 今すぐ採点する！", () =>
             {
                 if (targetCanvas != null)
                 {
@@ -233,27 +500,158 @@ namespace DrawingSystem.UI
                     HandleScoreEvaluated(res);
                 }
             });
+            evalBtn.GetComponent<Image>().color = new Color(0.2f, 0.55f, 0.35f);
 
-            scoreText = CreateLabel(panelRoot.transform, "スコア: 未測定", 15, FontStyle.Bold, new Color(1f, 0.9f, 0.2f));
+            scoreText = CreateLabel(root, "スコア: まだ採点されていません", 14, FontStyle.Bold, new Color(1f, 0.9f, 0.2f));
 
-            // Heatmap Display Container
-            var hmObj = new GameObject("HeatmapView");
-            hmObj.transform.SetParent(panelRoot.transform, false);
-            var hmRt = hmObj.AddComponent<RectTransform>();
-            hmRt.sizeDelta = new Vector2(160, 160);
-            heatmapImage = hmObj.AddComponent<RawImage>();
-            heatmapImage.color = Color.white;
-            hmObj.SetActive(false);
+            // ════════════════════════════════════════════════════════════════
+            // 7. 保存・画像エクスポート
+            // ════════════════════════════════════════════════════════════════
+            CreateSectionHeader(root, "💾 作品の保存・エクスポート");
 
-            // Export Section
-            CreateLabel(panelRoot.transform, "─── 保存・書き出し ───", 13, FontStyle.Bold, new Color(0.8f, 0.8f, 0.8f));
-            var expRow = CreateHorizontalRow(panelRoot.transform);
-            CreateButton(expRow.transform, "PNG保存", () => ExportDrawing("png"));
-            CreateButton(expRow.transform, "JPG保存", () => ExportDrawing("jpg"));
-            CreateButton(expRow.transform, "SVG保存", () => ExportDrawing("svg"));
+            var expRow = CreateHRow(root, 32);
+            CreateButton(expRow.transform, "PNG 保存", () => ExportDrawing("png"));
+            CreateButton(expRow.transform, "JPG 保存", () => ExportDrawing("jpg"));
+            CreateButton(expRow.transform, "SVG 保存", () => ExportDrawing("svg"));
 
-            // Notifications Toast
-            notificationText = CreateLabel(panelRoot.transform, "", 11, FontStyle.Italic, new Color(0.4f, 1f, 0.5f));
+            notificationText = CreateLabel(root, "", 11, FontStyle.Italic, new Color(0.4f, 1f, 0.5f));
+
+            // ════════════════════════════════════════════════════════════════
+            // 8. ゲーム終了ボタン (ユーザー要望)
+            // ════════════════════════════════════════════════════════════════
+            CreateSectionHeader(root, "⏹ アプリケーション");
+
+            var quitRow = CreateHRow(root, 40);
+            var quitBtn = CreateButton(quitRow.transform, "⏹ ゲームを終了する", () =>
+            {
+                Debug.Log("[DrawingSystem] ゲーム終了リクエストを受信しました。");
+#if UNITY_EDITOR
+                UnityEditor.EditorApplication.isPlaying = false;
+#else
+                Application.Quit();
+#endif
+            });
+            var qImg = quitBtn.GetComponent<Image>();
+            if (qImg != null) qImg.color = new Color(0.75f, 0.18f, 0.18f);
+        }
+
+        // ─── Layer List Rebuild ───────────────────────────────────────────────
+        private void RebuildLayerList()
+        {
+            if (layerListContainer == null) return;
+
+            for (int i = layerListContainer.childCount - 1; i >= 0; i--)
+            {
+                Destroy(layerListContainer.GetChild(i).gameObject);
+            }
+
+            var lm = targetCanvas?.Layers;
+            if (lm == null) return;
+
+            // 上位レイヤーをリストの上側に表示
+            for (int i = lm.Layers.Count - 1; i >= 0; i--)
+            {
+                int layerIndex = i;
+                var layer = lm.Layers[i];
+                bool isActive = (i == lm.ActiveLayerIndex);
+
+                var rowGo = new GameObject($"LayerRow_{i}");
+                rowGo.transform.SetParent(layerListContainer, false);
+                var rowImg = rowGo.AddComponent<Image>();
+                rowImg.color = isActive ? new Color(0.25f, 0.45f, 0.75f, 0.85f) : new Color(0.18f, 0.18f, 0.22f, 0.6f);
+
+                var rowHlg = rowGo.AddComponent<HorizontalLayoutGroup>();
+                rowHlg.padding = new RectOffset(6, 6, 2, 2);
+                rowHlg.spacing = 6;
+                rowHlg.childForceExpandWidth  = false;
+                rowHlg.childForceExpandHeight = true;
+                rowHlg.childControlWidth  = false;
+                rowHlg.childControlHeight = true;
+
+                var rowLe = rowGo.AddComponent<LayoutElement>();
+                rowLe.minHeight = 30;
+
+                // 👁 表示/非表示トグルボタン
+                var visBtn = CreateButton(rowGo.transform, layer.IsVisible ? "👁" : "🚫", null);
+                var visLe = visBtn.GetComponent<LayoutElement>();
+                visLe.minWidth = 32; visLe.flexibleWidth = 0;
+                visBtn.onClick.AddListener(() =>
+                {
+                    layer.IsVisible = !layer.IsVisible;
+                    targetCanvas?.RefreshComposite();
+                    RebuildLayerList();
+                });
+
+                // レイヤー選択ボタン（アクティブ化）
+                string displayName = $"{(isActive ? "▶ " : "   ")}{layer.LayerName}";
+                var selectBtn = CreateButton(rowGo.transform, displayName, () =>
+                {
+                    lm.SetActiveLayer(layerIndex);
+                    SyncActiveLayerControls();
+                    RebuildLayerList();
+                });
+                var selLe = selectBtn.GetComponent<LayoutElement>();
+                selLe.flexibleWidth = 1;
+                var selTxt = selectBtn.GetComponentInChildren<Text>();
+                if (selTxt != null) selTxt.alignment = TextAnchor.MiddleLeft;
+            }
+
+            SyncActiveLayerControls();
+        }
+
+        private void SyncActiveLayerControls()
+        {
+            var lm = targetCanvas?.Layers;
+            var active = lm?.ActiveLayer;
+            if (active == null) return;
+
+            if (layerOpacitySlider != null)
+                layerOpacitySlider.SetValueWithoutNotify(active.Opacity);
+            if (layerOpacityLabel != null)
+                layerOpacityLabel.text = $"選択中レイヤー不透明度: {(active.Opacity * 100f):F0}%";
+            if (blendModeDropdown != null)
+                blendModeDropdown.SetValueWithoutNotify((int)active.BlendMode);
+        }
+
+        // ─── HSV Color Helpers ────────────────────────────────────────────────
+        private void RefreshHSVColor()
+        {
+            var col = Color.HSVToRGB(currentHue, currentSat, currentVal);
+            ApplyColor(col);
+        }
+
+        private void ApplyColor(Color col)
+        {
+            if (targetCanvas != null)
+            {
+                targetCanvas.CurrentColor = col;
+                targetCanvas.IsEraserMode = false;
+                if (eraserBtnImg != null) eraserBtnImg.color = StyleColor.ButtonBg;
+                var eraserTxt = eraserBtn?.GetComponentInChildren<Text>();
+                if (eraserTxt != null) eraserTxt.text = "消しゴム: OFF";
+            }
+
+            if (colorPreview != null) colorPreview.color = col;
+            if (hexLabel != null) hexLabel.text = ColorToHex(col);
+
+            Color.RGBToHSV(col, out currentHue, out currentSat, out currentVal);
+            if (hueSlider != null) hueSlider.SetValueWithoutNotify(currentHue);
+            if (satSlider != null) satSlider.SetValueWithoutNotify(currentSat);
+            if (valSlider != null) valSlider.SetValueWithoutNotify(currentVal);
+        }
+
+        private static string ColorToHex(Color c)
+        {
+            return $"#{Mathf.RoundToInt(c.r * 255):X2}{Mathf.RoundToInt(c.g * 255):X2}{Mathf.RoundToInt(c.b * 255):X2}";
+        }
+
+        // ─── Score & Export ───────────────────────────────────────────────────
+        private void HandleScoreEvaluated(ScoringResult result)
+        {
+            if (scoreText != null)
+            {
+                scoreText.text = $"得点: {result.Score * 100f:F1} 点\n({result.ScorerName})";
+            }
         }
 
         private void ExportDrawing(string format)
@@ -270,46 +668,59 @@ namespace DrawingSystem.UI
                 case "jpg": targetCanvas.ExportJPG(file); break;
                 case "svg": targetCanvas.ExportSVG(file); break;
             }
-
-            ShowNotification($"保存完了: {file}");
-        }
-
-        private void HandleScoreEvaluated(ScoringResult result)
-        {
-            if (scoreText != null)
-            {
-                scoreText.text = $"得点: {result.Score * 100f:F1} 点\n({result.ScorerName})";
-            }
-
-            if (heatmapImage != null && result.Heatmap != null)
-            {
-                heatmapImage.gameObject.SetActive(true);
-                heatmapImage.texture = result.Heatmap;
-            }
+            ShowNotification($"保存完了: {Path.GetFileName(file)}");
         }
 
         private void ShowNotification(string msg)
         {
             Debug.Log($"[RuntimeControlPanel] {msg}");
-            if (notificationText != null)
-            {
-                notificationText.text = msg;
-            }
+            if (notificationText != null) notificationText.text = msg;
         }
 
-        #region UI Helper Factories
+        // ════════════════════════════════════════════════════════════════════
+        //  UI Factory Helpers
+        // ════════════════════════════════════════════════════════════════════
+        private static class StyleColor
+        {
+            public static readonly Color ButtonBg   = new Color(0.22f, 0.30f, 0.44f);
+            public static readonly Color SectionBg  = new Color(0.14f, 0.15f, 0.20f);
+            public static readonly Color HeaderText = new Color(0.95f, 0.78f, 0.32f);
+        }
+
+        private static void CreateSectionHeader(Transform parent, string title)
+        {
+            var go = new GameObject("SectionHeader");
+            go.transform.SetParent(parent, false);
+            var img = go.AddComponent<Image>();
+            img.color = StyleColor.SectionBg;
+            var le = go.AddComponent<LayoutElement>();
+            le.minHeight = string.IsNullOrEmpty(title) ? 6 : 24;
+
+            if (!string.IsNullOrEmpty(title))
+            {
+                var txt = CreateLabel(go.transform, title, 12, FontStyle.Bold, StyleColor.HeaderText);
+                var txtRt = txt.GetComponent<RectTransform>();
+                txtRt.anchorMin = Vector2.zero;
+                txtRt.anchorMax = Vector2.one;
+                txtRt.sizeDelta = Vector2.zero;
+                txt.alignment   = TextAnchor.MiddleLeft;
+                txt.GetComponent<LayoutElement>().minHeight = 0;
+            }
+        }
 
         private static Text CreateLabel(Transform parent, string text, int fontSize, FontStyle style, Color color)
         {
             var go = new GameObject("Label");
             go.transform.SetParent(parent, false);
             var txt = go.AddComponent<Text>();
-            txt.text = text;
-            txt.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf") ?? Resources.GetBuiltinResource<Font>("Arial.ttf");
-            txt.fontSize = fontSize;
+            txt.text      = text;
+            txt.font      = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf")
+                         ?? Resources.GetBuiltinResource<Font>("Arial.ttf");
+            txt.fontSize  = fontSize;
             txt.fontStyle = style;
-            txt.color = color;
+            txt.color     = color;
             txt.alignment = TextAnchor.MiddleLeft;
+            txt.supportRichText = false;
 
             var le = go.AddComponent<LayoutElement>();
             le.minHeight = fontSize + 8;
@@ -318,21 +729,33 @@ namespace DrawingSystem.UI
 
         private static Button CreateButton(Transform parent, string title, Action onClick)
         {
-            var go = new GameObject("Btn_" + title);
+            var go  = new GameObject("Btn_" + title);
             go.transform.SetParent(parent, false);
             var img = go.AddComponent<Image>();
-            img.color = new Color(0.25f, 0.35f, 0.5f);
+            img.color = StyleColor.ButtonBg;
 
             var btn = go.AddComponent<Button>();
             btn.targetGraphic = img;
 
+            var cb = new ColorBlock
+            {
+                normalColor      = StyleColor.ButtonBg,
+                highlightedColor = new Color(0.35f, 0.48f, 0.68f),
+                pressedColor     = new Color(0.15f, 0.22f, 0.35f),
+                selectedColor    = StyleColor.ButtonBg,
+                disabledColor    = new Color(0.4f, 0.4f, 0.4f, 0.5f),
+                colorMultiplier  = 1f,
+                fadeDuration     = 0.1f
+            };
+            btn.colors = cb;
+
             var le = go.AddComponent<LayoutElement>();
-            le.minHeight = 30;
+            le.minHeight    = 30;
             le.flexibleWidth = 1;
 
             if (!string.IsNullOrEmpty(title))
             {
-                var txt = CreateLabel(go.transform, title, 12, FontStyle.Bold, Color.white);
+                var txt   = CreateLabel(go.transform, title, 11, FontStyle.Bold, Color.white);
                 txt.alignment = TextAnchor.MiddleCenter;
                 var txtRt = txt.GetComponent<RectTransform>();
                 txtRt.anchorMin = Vector2.zero;
@@ -344,19 +767,18 @@ namespace DrawingSystem.UI
             return btn;
         }
 
-        private static GameObject CreateHorizontalRow(Transform parent)
+        private static GameObject CreateHRow(Transform parent, float minH = 32f)
         {
             var go = new GameObject("HRow");
             go.transform.SetParent(parent, false);
             var hlg = go.AddComponent<HorizontalLayoutGroup>();
-            hlg.spacing = 6;
-            hlg.childControlWidth = true;
-            hlg.childControlHeight = true;
-            hlg.childForceExpandWidth = true;
+            hlg.spacing               = 5;
+            hlg.childForceExpandWidth  = true;
             hlg.childForceExpandHeight = true;
-
+            hlg.childControlWidth  = true;
+            hlg.childControlHeight = true;
             var le = go.AddComponent<LayoutElement>();
-            le.minHeight = 32;
+            le.minHeight = minH;
             return go;
         }
 
@@ -364,49 +786,117 @@ namespace DrawingSystem.UI
         {
             var go = new GameObject("Slider");
             go.transform.SetParent(parent, false);
-            var slider = go.AddComponent<Slider>();
-            slider.minValue = min;
-            slider.maxValue = max;
-            slider.value = current;
-
             var le = go.AddComponent<LayoutElement>();
             le.minHeight = 22;
 
-            // Background
-            var bgGo = new GameObject("Background");
+            // 背景
+            var bgGo  = new GameObject("Background");
             bgGo.transform.SetParent(go.transform, false);
-            var bgImg = bgGo.AddComponent<Image>();
-            bgImg.color = new Color(0.2f, 0.2f, 0.25f);
+            bgGo.AddComponent<Image>().color = new Color(0.18f, 0.18f, 0.22f);
             var bgRt = bgGo.GetComponent<RectTransform>();
             bgRt.anchorMin = new Vector2(0, 0.25f);
             bgRt.anchorMax = new Vector2(1, 0.75f);
             bgRt.sizeDelta = Vector2.zero;
 
-            // Fill Area
-            var fillArea = new GameObject("Fill Area");
-            fillArea.transform.SetParent(go.transform, false);
-            var fillAreaRt = fillArea.AddComponent<RectTransform>();
-            fillAreaRt.anchorMin = new Vector2(0, 0.25f);
-            fillAreaRt.anchorMax = new Vector2(1, 0.75f);
-            fillAreaRt.sizeDelta = Vector2.zero;
+            // 塗りつぶし領域
+            var faGo = new GameObject("Fill Area");
+            faGo.transform.SetParent(go.transform, false);
+            var faRt = faGo.AddComponent<RectTransform>();
+            faRt.anchorMin = new Vector2(0, 0.25f);
+            faRt.anchorMax = new Vector2(1, 0.75f);
+            faRt.sizeDelta = Vector2.zero;
 
-            var fill = new GameObject("Fill");
-            fill.transform.SetParent(fillArea.transform, false);
-            var fillImg = fill.AddComponent<Image>();
-            fillImg.color = new Color(0.2f, 0.6f, 1f);
-            var fillRt = fill.GetComponent<RectTransform>();
+            var fillGo = new GameObject("Fill");
+            fillGo.transform.SetParent(faGo.transform, false);
+            fillGo.AddComponent<Image>().color = new Color(0.28f, 0.58f, 0.95f);
+            var fillRt = fillGo.GetComponent<RectTransform>();
             fillRt.sizeDelta = Vector2.zero;
 
-            slider.fillRect = fillRt;
+            // つまみ領域
+            var haGo = new GameObject("Handle Slide Area");
+            haGo.transform.SetParent(go.transform, false);
+            var haRt = haGo.AddComponent<RectTransform>();
+            haRt.anchorMin = new Vector2(0, 0);
+            haRt.anchorMax = new Vector2(1, 1);
+            haRt.sizeDelta = new Vector2(-14, 0);
+
+            var handleGo = new GameObject("Handle");
+            handleGo.transform.SetParent(haGo.transform, false);
+            var handleImg = handleGo.AddComponent<Image>();
+            handleImg.color = Color.white;
+            var handleRt = handleGo.GetComponent<RectTransform>();
+            handleRt.sizeDelta = new Vector2(14, 0);
+
+            var slider = go.AddComponent<Slider>();
+            slider.minValue   = min;
+            slider.maxValue   = max;
+            slider.fillRect   = fillRt;
+            slider.handleRect = handleRt;
+            slider.direction  = Slider.Direction.LeftToRight;
+            slider.value      = current;
 
             if (onChanged != null)
-            {
                 slider.onValueChanged.AddListener(val => onChanged(val));
-            }
 
             return slider;
         }
 
-        #endregion
+        private static Toggle CreateToggle(Transform parent, bool initialValue, Action<bool> onChanged)
+        {
+            var go = new GameObject("Toggle");
+            go.transform.SetParent(parent, false);
+            var le = go.AddComponent<LayoutElement>();
+            le.minWidth = 30; le.minHeight = 26; le.flexibleWidth = 0;
+
+            var bgImg = go.AddComponent<Image>();
+            bgImg.color = new Color(0.2f, 0.2f, 0.25f);
+
+            var checkGo = new GameObject("Checkmark");
+            checkGo.transform.SetParent(go.transform, false);
+            var checkImg = checkGo.AddComponent<Image>();
+            checkImg.color = new Color(0.2f, 0.8f, 0.4f);
+            var chkRt = checkGo.GetComponent<RectTransform>();
+            chkRt.anchorMin = new Vector2(0.2f, 0.2f);
+            chkRt.anchorMax = new Vector2(0.8f, 0.8f);
+            chkRt.sizeDelta = Vector2.zero;
+
+            var toggle = go.AddComponent<Toggle>();
+            toggle.targetGraphic = bgImg;
+            toggle.graphic = checkImg;
+            toggle.isOn = initialValue;
+
+            if (onChanged != null)
+                toggle.onValueChanged.AddListener(val => onChanged(val));
+
+            return toggle;
+        }
+
+        private static Dropdown CreateDropdown(Transform parent, string[] options, int defaultIndex, Action<int> onChanged)
+        {
+            var go = new GameObject("Dropdown");
+            go.transform.SetParent(parent, false);
+            var img = go.AddComponent<Image>();
+            img.color = new Color(0.22f, 0.22f, 0.28f);
+            var le = go.AddComponent<LayoutElement>();
+            le.minHeight = 32;
+
+            var dd = go.AddComponent<Dropdown>();
+            dd.captionText = CreateLabel(go.transform, options[defaultIndex], 12, FontStyle.Normal, Color.white);
+            dd.captionText.GetComponent<RectTransform>().anchorMin = new Vector2(0.05f, 0);
+            dd.captionText.GetComponent<RectTransform>().anchorMax = new Vector2(0.9f, 1);
+            dd.captionText.GetComponent<RectTransform>().sizeDelta = Vector2.zero;
+
+            dd.options = new List<Dropdown.OptionData>();
+            foreach (var opt in options)
+                dd.options.Add(new Dropdown.OptionData(opt));
+
+            dd.value = defaultIndex;
+            dd.RefreshShownValue();
+
+            if (onChanged != null)
+                dd.onValueChanged.AddListener(idx => onChanged(idx));
+
+            return dd;
+        }
     }
 }

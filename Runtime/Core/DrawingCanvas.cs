@@ -118,6 +118,20 @@ namespace DrawingSystem
         public BrushProfile CurrentBrush { get => currentBrush; set => currentBrush = value; }
         public ScriptableObject DefaultScorerAsset { get => defaultScorerAsset; set => defaultScorerAsset = value; }
         public Texture2D ReferenceImage { get => referenceImage; set => referenceImage = value; }
+        public Color BackgroundColor
+        {
+            get => backgroundColor;
+            set
+            {
+                backgroundColor = value;
+                RefreshComposite();
+            }
+        }
+        public bool EnableRealtimeScoring { get => enableRealtimeScoring; set => enableRealtimeScoring = value; }
+        public float RealtimeScoringInterval { get => realtimeScoringInterval; set => realtimeScoringInterval = Mathf.Max(0.05f, value); }
+        public RawImage TargetRawImage => targetRawImage;
+
+        private bool isCurrentlyDrawingStroke = false;
 
         /// <summary>
         /// 現在のアクティブレイヤーをクリア（全消去）します。
@@ -289,6 +303,19 @@ namespace DrawingSystem
         {
             if (layerManager.ActiveLayer == null) return;
 
+            // UI要素（操作パネル、ボタンなど）をクリックした場合は描画を開始しない
+            if (input.Phase == InputPhase.Began && IsPointerOverBlockingUI(input.Position))
+            {
+                isCurrentlyDrawingStroke = false;
+                return;
+            }
+
+            // ストロークが開始されていない状態での移動は無視（UI上からドラッグしてキャンバスに入った場合など）
+            if (input.Phase == InputPhase.Moved && !isCurrentlyDrawingStroke)
+            {
+                return;
+            }
+
             // 入力座標をキャンバスのUV座標(0~1)に変換
             if (!TryGetUVCoordinates(input.Position, out Vector2 uv))
             {
@@ -314,6 +341,7 @@ namespace DrawingSystem
                     {
                         EndCurrentStroke();
                     }
+                    isCurrentlyDrawingStroke = true;
                     currentSmoothedUV = uv;
                     currentSmoothedPressure = pressure;
                     isStabilizing = stabilization > 0.001f;
@@ -322,6 +350,8 @@ namespace DrawingSystem
 
                 case InputPhase.Moved:
                 case InputPhase.Stationary:
+                    if (!isCurrentlyDrawingStroke) break;
+
                     if (isStabilizing)
                     {
                         // 指数平滑化 (EMA): stabilization に応じて追従速度を調整し、手の微細な震えを吸収
@@ -343,6 +373,34 @@ namespace DrawingSystem
                     EndCurrentStroke();
                     break;
             }
+        }
+
+        private bool IsPointerOverBlockingUI(Vector2 screenPosition)
+        {
+            if (UnityEngine.EventSystems.EventSystem.current == null) return false;
+
+            var pointerData = new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current)
+            {
+                position = screenPosition
+            };
+            var results = new List<UnityEngine.EventSystems.RaycastResult>();
+            UnityEngine.EventSystems.EventSystem.current.RaycastAll(pointerData, results);
+
+            for (int i = 0; i < results.Count; i++)
+            {
+                var go = results[i].gameObject;
+                if (go == null) continue;
+
+                // targetRawImage 自体へのヒットはキャンバス描画面なのでブロックしない
+                if (targetRawImage != null && (go == targetRawImage.gameObject || go.transform.IsChildOf(targetRawImage.transform)))
+                {
+                    continue;
+                }
+
+                // それ以外のUI要素（パネル、ボタン、スライダー等）の上ならブロック
+                return true;
+            }
+            return false;
         }
 
         private void BeginStrokeAt(Vector2 uv, float pressure, Vector2 tilt, bool isEraser)
@@ -429,6 +487,7 @@ namespace DrawingSystem
             }
 
             lastStrokeUV = null;
+            isCurrentlyDrawingStroke = false;
         }
 
         /// <summary>

@@ -373,34 +373,47 @@ namespace DrawingSystem
 
         private void PollMouseFallback()
         {
-            var mouse = Mouse.current;
-            if (mouse == null) return;
+            bool isPressed = false;
+            Vector2 pos = Vector2.zero;
+            string devName = "Mouse";
 
-            bool isPressed = mouse.leftButton.isPressed;
+            var mouse = Mouse.current;
+            if (mouse != null)
+            {
+                isPressed = mouse.leftButton.isPressed;
+                pos = mouse.position.ReadValue();
+            }
+            else
+            {
+                // Fallback to legacy Input if Mouse.current is unavailable in build
+                isPressed = Input.GetMouseButton(0);
+                pos = Input.mousePosition;
+                devName = "Legacy Mouse";
+            }
 
             if (!_isMouseDrawing && isPressed)
             {
                 _isMouseDrawing = true;
                 RaiseInput(new DrawingInputData
                 {
-                    Position = mouse.position.ReadValue(),
+                    Position = pos,
                     Pressure = 1.0f,
                     Tilt = Vector2.zero,
                     IsEraser = false,
                     Phase = InputPhase.Began,
-                    DeviceName = "Mouse"
+                    DeviceName = devName
                 });
             }
             else if (_isMouseDrawing && isPressed)
             {
                 RaiseInput(new DrawingInputData
                 {
-                    Position = mouse.position.ReadValue(),
+                    Position = pos,
                     Pressure = 1.0f,
                     Tilt = Vector2.zero,
                     IsEraser = false,
                     Phase = InputPhase.Moved,
-                    DeviceName = "Mouse"
+                    DeviceName = devName
                 });
             }
             else if (_isMouseDrawing && !isPressed)
@@ -408,12 +421,12 @@ namespace DrawingSystem
                 _isMouseDrawing = false;
                 RaiseInput(new DrawingInputData
                 {
-                    Position = mouse.position.ReadValue(),
+                    Position = pos,
                     Pressure = 1.0f,
                     Tilt = Vector2.zero,
                     IsEraser = false,
                     Phase = InputPhase.Ended,
-                    DeviceName = "Mouse"
+                    DeviceName = devName
                 });
             }
         }
