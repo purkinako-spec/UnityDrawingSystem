@@ -21,10 +21,12 @@ namespace DrawingSystem.Editor
             {
                 EditorGUILayout.HelpBox("💡 [▶ 再生 (Play)] ボタンを押すと、ゲーム画面左側に「描画操作パネル」と「☰ パネル(Tab)」開閉ボタンが完全展開されます。", MessageType.Info);
             }
-
-            if (GUILayout.Button("🎨 UI パネルを手動再生成 (Rebuild UI)"))
+            else
             {
-                panel.BuildRuntimeUI();
+                if (GUILayout.Button("🎨 UI パネルを再生成 (Rebuild UI)"))
+                {
+                    panel.BuildRuntimeUI();
+                }
             }
 
             EditorGUILayout.Space(5);

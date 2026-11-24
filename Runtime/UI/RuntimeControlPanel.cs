@@ -14,7 +14,6 @@ namespace DrawingSystem.UI
     /// ビルド後の実行環境でもインスペクターで調整可能なほぼすべての機能
     /// （ブラシ、レイヤー、カラーピッカー、採点難易度、保存、終了）を操作可能にする完全版ランタイムUI。
     /// </summary>
-    [ExecuteAlways]
     [DisallowMultipleComponent]
     [AddComponentMenu("Drawing System/Runtime Control Panel")]
     public class RuntimeControlPanel : MonoBehaviour
@@ -85,6 +84,8 @@ namespace DrawingSystem.UI
 
         private void Start()
         {
+            if (!Application.isPlaying) return;
+
             if (targetCanvas == null)
             {
 #if UNITY_2023_1_OR_NEWER
@@ -174,7 +175,7 @@ namespace DrawingSystem.UI
             btnRt.anchoredPosition = new Vector2(10, -10);
             btnRt.sizeDelta = new Vector2(110, 36);
 
-            var floatImg = AddUIImage(toggleFloatingBtnGo, new Color(0.18f, 0.22f, 0.32f, 0.9f));
+            var floatImg = AddUIImage(toggleFloatingBtnGo, new Color(0.24f, 0.34f, 0.50f, 0.95f));
 
             var floatBtn = toggleFloatingBtnGo.AddComponent<Button>();
             floatBtn.targetGraphic = floatImg;
@@ -195,7 +196,8 @@ namespace DrawingSystem.UI
             panelRt.sizeDelta = new Vector2(panelWidth, 0);
             panelRt.anchoredPosition = Vector2.zero;
 
-            var panelBg = AddUIImage(panelRoot, new Color(0.10f, 0.11f, 0.14f, 0.95f));
+            // 明るく視認性の高いダークスレート背景
+            var panelBg = AddUIImage(panelRoot, new Color(0.18f, 0.20f, 0.26f, 0.98f));
 
             // ── ScrollRect (スクロール可能領域) ──────────────────────────────
             var scrollObj = new GameObject("ScrollRect");
@@ -601,7 +603,8 @@ namespace DrawingSystem.UI
                 });
 
                 // レイヤー選択ボタン（クリックで行全体がアクティブ化）
-                string displayName = $"{(isActive ? "▶ " : "   ")}{layer.LayerName}";
+                string layerName = string.IsNullOrEmpty(layer.LayerName) ? $"レイヤー {layerIndex + 1}" : layer.LayerName;
+                string displayName = isActive ? $"▶ {layerName}" : $"   {layerName}";
                 var selectBtn = CreateButton(rowGo.transform, displayName, () =>
                 {
                     lm.SetActiveLayer(layerIndex);
@@ -612,12 +615,23 @@ namespace DrawingSystem.UI
                 selLe.minWidth = 140;
                 selLe.flexibleWidth = 1; // 横幅いっぱいに広げてクリックしやすくする
                 var selTxt = selectBtn.GetComponentInChildren<Text>();
-                if (selTxt != null) selTxt.alignment = TextAnchor.MiddleLeft;
+                if (selTxt != null)
+                {
+                    selTxt.alignment = TextAnchor.MiddleLeft;
+                    selTxt.fontSize  = 13;
+                    selTxt.color     = Color.white;
+                    selTxt.fontStyle = isActive ? FontStyle.Bold : FontStyle.Normal;
+                    selTxt.horizontalOverflow = HorizontalWrapMode.Overflow;
+                    selTxt.verticalOverflow   = VerticalWrapMode.Overflow;
+                    var sRt = selTxt.GetComponent<RectTransform>();
+                    sRt.offsetMin = new Vector2(10, 0); // 左側に適度なパディング
+                    sRt.offsetMax = new Vector2(-6, 0);
+                }
 
                 var selImg = selectBtn.GetComponent<Image>();
                 if (selImg != null)
                 {
-                    selImg.color = isActive ? new Color(0.28f, 0.55f, 0.90f) : StyleColor.ButtonBg;
+                    selImg.color = isActive ? new Color(0.25f, 0.55f, 0.95f) : StyleColor.ButtonBg;
                 }
 
                 int uiLayer = LayerMask.NameToLayer("UI");
@@ -726,9 +740,9 @@ namespace DrawingSystem.UI
         // ════════════════════════════════════════════════════════════════════
         private static class StyleColor
         {
-            public static readonly Color ButtonBg   = new Color(0.22f, 0.30f, 0.44f);
-            public static readonly Color SectionBg  = new Color(0.14f, 0.15f, 0.20f);
-            public static readonly Color HeaderText = new Color(0.95f, 0.78f, 0.32f);
+            public static readonly Color ButtonBg   = new Color(0.28f, 0.40f, 0.58f);
+            public static readonly Color SectionBg  = new Color(0.23f, 0.26f, 0.34f);
+            public static readonly Color HeaderText = new Color(0.98f, 0.85f, 0.35f);
         }
 
         private static Sprite cachedWhiteSprite;
@@ -738,6 +752,7 @@ namespace DrawingSystem.UI
             var tex = Texture2D.whiteTexture;
             cachedWhiteSprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f));
             cachedWhiteSprite.name = "UI_WhiteSprite";
+            cachedWhiteSprite.hideFlags = HideFlags.DontSave;
             return cachedWhiteSprite;
         }
 
@@ -827,15 +842,17 @@ namespace DrawingSystem.UI
             var go = new GameObject("Label");
             go.transform.SetParent(parent, false);
             var txt = go.AddComponent<Text>();
-            txt.text            = text;
-            txt.font            = GetSafeFont();
-            txt.material        = Canvas.GetDefaultCanvasMaterial();
-            txt.fontSize        = fontSize;
-            txt.fontStyle       = style;
-            txt.color           = color;
-            txt.alignment       = TextAnchor.MiddleLeft;
-            txt.supportRichText = false;
-            txt.raycastTarget   = false; // ラベルがクリック判定を遮らないよう無効化
+            txt.text               = text;
+            txt.font               = GetSafeFont();
+            txt.material           = Canvas.GetDefaultCanvasMaterial();
+            txt.fontSize           = fontSize;
+            txt.fontStyle          = style;
+            txt.color              = color;
+            txt.alignment          = TextAnchor.MiddleLeft;
+            txt.supportRichText    = false;
+            txt.raycastTarget      = false; // ラベルがクリック判定を遮らないよう無効化
+            txt.horizontalOverflow = HorizontalWrapMode.Overflow; // 文字列が枠サイズで消えるのを完全に防ぐ
+            txt.verticalOverflow   = VerticalWrapMode.Overflow;   // 縦幅不足による非表示（Truncate）を防止
 
             var le = go.AddComponent<LayoutElement>();
             le.minHeight = fontSize + 8;
@@ -854,8 +871,8 @@ namespace DrawingSystem.UI
             var cb = new ColorBlock
             {
                 normalColor      = StyleColor.ButtonBg,
-                highlightedColor = new Color(0.35f, 0.48f, 0.68f),
-                pressedColor     = new Color(0.15f, 0.22f, 0.35f),
+                highlightedColor = new Color(0.38f, 0.52f, 0.74f),
+                pressedColor     = new Color(0.20f, 0.30f, 0.45f),
                 selectedColor    = StyleColor.ButtonBg,
                 disabledColor    = new Color(0.4f, 0.4f, 0.4f, 0.5f),
                 colorMultiplier  = 1f,
@@ -874,7 +891,8 @@ namespace DrawingSystem.UI
                 var txtRt = txt.GetComponent<RectTransform>();
                 txtRt.anchorMin = Vector2.zero;
                 txtRt.anchorMax = Vector2.one;
-                txtRt.sizeDelta = Vector2.zero;
+                txtRt.offsetMin = new Vector2(4, 0);
+                txtRt.offsetMax = new Vector2(-4, 0);
             }
 
             if (onClick != null) btn.onClick.AddListener(() => onClick());
@@ -903,10 +921,10 @@ namespace DrawingSystem.UI
             var le = go.AddComponent<LayoutElement>();
             le.minHeight = 22;
 
-            // 背景
+            // スライダー溝の背景（明るく視認性の高いグレー）
             var bgGo  = new GameObject("Background");
             bgGo.transform.SetParent(go.transform, false);
-            AddUIImage(bgGo, new Color(0.18f, 0.18f, 0.22f));
+            AddUIImage(bgGo, new Color(0.28f, 0.30f, 0.38f));
             var bgRt = bgGo.GetComponent<RectTransform>();
             bgRt.anchorMin = new Vector2(0, 0.25f);
             bgRt.anchorMax = new Vector2(1, 0.75f);
@@ -922,7 +940,7 @@ namespace DrawingSystem.UI
 
             var fillGo = new GameObject("Fill");
             fillGo.transform.SetParent(faGo.transform, false);
-            var fillImg = AddUIImage(fillGo, new Color(0.28f, 0.58f, 0.95f));
+            var fillImg = AddUIImage(fillGo, new Color(0.30f, 0.65f, 1.0f));
             var fillRt = fillGo.GetComponent<RectTransform>();
             fillRt.sizeDelta = Vector2.zero;
 
