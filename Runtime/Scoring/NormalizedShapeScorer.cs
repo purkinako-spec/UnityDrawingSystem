@@ -5,18 +5,26 @@ using UnityEngine;
 namespace DrawingSystem.Scoring
 {
     /// <summary>
-    /// Position- and scale-invariant scorer with intelligent noise filtering.
+    /// Position- and scale-invariant scorer with intelligent noise filtering and difficulty control.
     /// It crops the drawing to its bounding box (ignoring stray dots and tiny noise clusters),
-    /// normalizes the scale/aspect-ratio, and evaluates similarity using Shape (IoU) and MSE.
+    /// normalizes the scale/aspect-ratio, and strictly evaluates stroke overlap (IoU and proximity)
+    /// without giving free points for empty background.
     /// </summary>
     [CreateAssetMenu(fileName = "NormalizedShapeScorer", menuName = "Drawing System/Scoring/Normalized Shape Scorer (Position & Scale Invariant)")]
     public class NormalizedShapeScorer : ScriptableObject, IScoringEngine
     {
-        [Header("Binarization & Thresholds")]
-        [Tooltip("Brightness threshold (0-1) to distinguish drawn stroke pixels from background.")]
+        [Header("Difficulty Adjustment (難易度調整)")]
+        [Tooltip("0 = Very Easy (generous line tolerance), 0.5 = Normal, 1.0 = Very Strict (pixel-perfect required).")]
+        [SerializeField, Range(0f, 1f)] private float difficulty = 0.5f;
+
+        [Header("Binarization & Background")]
+        [Tooltip("Auto-detects whether the background is white/light or transparent/dark based on border sampling.")]
+        [SerializeField] private bool autoDetectBackground = true;
+
+        [Tooltip("Brightness threshold (0-1) to distinguish drawn stroke pixels from background when manual.")]
         [SerializeField, Range(0f, 1f)] private float binarizeThreshold = 0.5f;
 
-        [Tooltip("If true, treats dark pixels on a light background as strokes.")]
+        [Tooltip("Manual override: treats dark pixels on a light background as strokes (ignored if autoDetectBackground is true).")]
         [SerializeField] private bool invertColors = false;
 
         [Header("Noise Filtering (Anti-Stray Dot)")]
@@ -33,12 +41,12 @@ namespace DrawingSystem.Scoring
         [Tooltip("Padding ratio (0-0.2) around the cropped shape inside the normalized texture.")]
         [SerializeField, Range(0f, 0.2f)] private float paddingRatio = 0.05f;
 
-        [Header("Scoring Weights")]
-        [Tooltip("Weight of the shape silhouette IoU score.")]
-        [SerializeField, Range(0f, 1f)] private float iouWeight = 0.7f;
-
-        [Tooltip("Weight of the pixel-level density/proximity match score.")]
-        [SerializeField, Range(0f, 1f)] private float densityWeight = 0.3f;
+        /// <summary>Difficulty factor between 0 (very lenient) and 1 (strictly accurate).</summary>
+        public float Difficulty
+        {
+            get => difficulty;
+            set => difficulty = Mathf.Clamp01(value);
+        }
 
         public string Name => "Normalized Shape (Invariant)";
 
@@ -51,62 +59,98 @@ namespace DrawingSystem.Scoring
 
             var details = new Dictionary<string, float>();
 
-            // 1. Extract cleaned binary masks (with noise removal)
+            // 1. Extract cleaned binary masks (with noise removal and auto bg detection)
             bool[] refMask = ExtractCleanMask(reference, out RectInt refBox);
             bool[] drawnMask = ExtractCleanMask(drawn, out RectInt drawnBox);
 
-            // If neither has drawing, perfect match. If only one has drawing, zero match.
             bool refEmpty = refBox.width <= 0 || refBox.height <= 0;
             bool drawnEmpty = drawnBox.width <= 0 || drawnBox.height <= 0;
 
             if (refEmpty && drawnEmpty)
             {
                 details["IoU"] = 1f;
-                details["Density"] = 1f;
+                details["Precision"] = 1f;
+                details["Recall"] = 1f;
                 return new ScoringResult { Score = 1f, ScorerName = Name, Details = details };
             }
 
             if (refEmpty || drawnEmpty)
             {
                 details["IoU"] = 0f;
-                details["Density"] = 0f;
+                details["Precision"] = 0f;
+                details["Recall"] = 0f;
                 return new ScoringResult { Score = 0f, ScorerName = Name, Details = details };
             }
 
             // 2. Crop and normalize both shapes to normalizedResolution x normalizedResolution
-            float[] refNorm = NormalizeShape(refMask, reference.width, reference.height, refBox, normalizedResolution, paddingRatio);
-            float[] drawnNorm = NormalizeShape(drawnMask, drawn.width, drawn.height, drawnBox, normalizedResolution, paddingRatio);
+            bool[] refNorm = NormalizeShape(refMask, reference.width, reference.height, refBox, normalizedResolution, paddingRatio);
+            bool[] drawnNorm = NormalizeShape(drawnMask, drawn.width, drawn.height, drawnBox, normalizedResolution, paddingRatio);
 
-            // 3. Compute IoU and Density Score
+            // 3. Difficulty-adaptive Proximity Dilation:
+            // Easy (difficulty=0) => radius ~ 12px (forgives slight hand shakes / offsets)
+            // Normal (difficulty=0.5) => radius ~ 5px
+            // Hard (difficulty=1.0) => radius ~ 1px (strict line alignment)
+            int toleranceRadius = Mathf.RoundToInt(Mathf.Lerp(12f, 1f, difficulty));
+            bool[] dilatedRef = Dilate(refNorm, normalizedResolution, normalizedResolution, toleranceRadius);
+            bool[] dilatedDrawn = Dilate(drawnNorm, normalizedResolution, normalizedResolution, toleranceRadius);
+
             int totalNormPixels = normalizedResolution * normalizedResolution;
-            float intersection = 0f;
-            float union = 0f;
-            float sumDiff = 0f;
+            int refStrokeCount = 0;
+            int drawnStrokeCount = 0;
+            int exactIntersection = 0;
+            int exactUnion = 0;
+            int drawnCoveredByRef = 0; // Precision: how much of drawn stroke is within reference tolerance
+            int refCoveredByDrawn = 0; // Recall: how much of reference is covered by drawn stroke
 
             for (int i = 0; i < totalNormPixels; i++)
             {
-                float r = refNorm[i];
-                float d = drawnNorm[i];
+                bool r = refNorm[i];
+                bool d = drawnNorm[i];
 
-                intersection += Mathf.Min(r, d);
-                union += Mathf.Max(r, d);
-                sumDiff += Mathf.Abs(r - d);
+                if (r) refStrokeCount++;
+                if (d) drawnStrokeCount++;
+
+                if (r && d) exactIntersection++;
+                if (r || d) exactUnion++;
+
+                if (d && dilatedRef[i]) drawnCoveredByRef++;
+                if (r && dilatedDrawn[i]) refCoveredByDrawn++;
             }
 
-            float iouScore = union > 0f ? (intersection / union) : 1f;
-            float densityScore = Mathf.Clamp01(1f - (sumDiff / totalNormPixels));
+            // Precision: Penalty for drawing outside / scribbling randomly
+            float precision = drawnStrokeCount > 0 ? (float)drawnCoveredByRef / drawnStrokeCount : 0f;
 
-            float totalWeight = iouWeight + densityWeight;
-            float finalScore = totalWeight > 0f
-                ? Mathf.Clamp01((iouScore * iouWeight + densityScore * densityWeight) / totalWeight)
-                : iouScore;
+            // Recall: Coverage of reference lines
+            float recall = refStrokeCount > 0 ? (float)refCoveredByDrawn / refStrokeCount : 0f;
 
-            details["IoU"] = iouScore;
-            details["Density"] = densityScore;
-            details["NormalizedResolution"] = normalizedResolution;
+            // Strict IoU (exact pixel overlap)
+            float exactIoU = exactUnion > 0 ? (float)exactIntersection / exactUnion : 0f;
 
-            // Generate Heatmap (Normalized resolution)
-            Texture2D heatmap = GenerateHeatmap(refNorm, drawnNorm, normalizedResolution);
+            // Combined F1 / Jaccard-like proximity score
+            float proximityScore = (precision + recall) > 0.0001f
+                ? (2f * precision * recall) / (precision + recall) // F1 harmonic mean
+                : 0f;
+
+            // Blend based on difficulty:
+            // Easy: mostly proximity score with generous radius
+            // Hard: heavily weighted towards exact IoU + strict non-dilated precision
+            float iouWeight = Mathf.Lerp(0.2f, 0.7f, difficulty);
+            float baseScore = Mathf.Lerp(proximityScore, exactIoU, iouWeight);
+
+            // Apply difficulty exponent curve:
+            // e.g. pow(score, 1.0 + difficulty * 1.5) to sharpen the falloff for messy drawings
+            float curveExponent = Mathf.Lerp(0.8f, 2.5f, difficulty);
+            float finalScore = Mathf.Clamp01(Mathf.Pow(baseScore, curveExponent));
+
+            details["FinalScore"] = finalScore;
+            details["Difficulty"] = difficulty;
+            details["ToleranceRadius"] = toleranceRadius;
+            details["Precision"] = precision;
+            details["Recall"] = recall;
+            details["ExactIoU"] = exactIoU;
+
+            // Generate diagnostic heatmap
+            Texture2D heatmap = GenerateHeatmap(refNorm, drawnNorm, dilatedRef, normalizedResolution);
 
             return new ScoringResult
             {
@@ -127,6 +171,35 @@ namespace DrawingSystem.Scoring
             int total = w * h;
             Color32[] pixels = tex.GetPixels32();
 
+            bool isLightBackground = false;
+            if (autoDetectBackground)
+            {
+                // Sample 4 corners and borders to detect if canvas is white/light
+                float borderGraySum = 0f;
+                float borderAlphaSum = 0f;
+                int sampleCount = 0;
+
+                int step = Mathf.Max(1, (w + h) / 64);
+                for (int x = 0; x < w; x += step)
+                {
+                    Sample(pixels[x], ref borderGraySum, ref borderAlphaSum, ref sampleCount);
+                    Sample(pixels[(h - 1) * w + x], ref borderGraySum, ref borderAlphaSum, ref sampleCount);
+                }
+                for (int y = 0; y < h; y += step)
+                {
+                    Sample(pixels[y * w], ref borderGraySum, ref borderAlphaSum, ref sampleCount);
+                    Sample(pixels[y * w + (w - 1)], ref borderGraySum, ref borderAlphaSum, ref sampleCount);
+                }
+
+                float avgAlpha = borderAlphaSum / sampleCount;
+                float avgGray = borderGraySum / sampleCount;
+                isLightBackground = avgAlpha > 0.5f && avgGray > 0.5f;
+            }
+            else
+            {
+                isLightBackground = invertColors;
+            }
+
             bool[] rawMask = new bool[total];
             for (int i = 0; i < total; i++)
             {
@@ -135,16 +208,18 @@ namespace DrawingSystem.Scoring
                 float gray = (0.299f * c.r + 0.587f * c.g + 0.114f * c.b) / 255f;
 
                 bool isStroke;
-                if (alpha < 0.05f)
+                if (alpha < 0.1f)
                 {
-                    isStroke = false;
+                    isStroke = false; // Transparent is always background
                 }
-                else if (invertColors)
+                else if (isLightBackground)
                 {
+                    // Light background (white): dark pixels are strokes
                     isStroke = (1f - gray) >= binarizeThreshold;
                 }
                 else
                 {
+                    // Dark background (black/transparent): bright pixels are strokes
                     isStroke = gray >= binarizeThreshold;
                 }
                 rawMask[i] = isStroke;
@@ -156,6 +231,13 @@ namespace DrawingSystem.Scoring
             // Compute robust bounding box (with outlier percentile trimming)
             bbox = ComputeRobustBoundingBox(cleanMask, w, h, outlierPercentile);
             return cleanMask;
+        }
+
+        private static void Sample(Color32 c, ref float graySum, ref float alphaSum, ref int count)
+        {
+            alphaSum += c.a / 255f;
+            graySum += (0.299f * c.r + 0.587f * c.g + 0.114f * c.b) / 255f;
+            count++;
         }
 
         /// <summary>
@@ -261,9 +343,9 @@ namespace DrawingSystem.Scoring
         /// <summary>
         /// Resamples and centers the bounding box region into a square normalized buffer, preserving aspect ratio.
         /// </summary>
-        private static float[] NormalizeShape(bool[] mask, int origW, int origH, RectInt box, int normRes, float padRatio)
+        private static bool[] NormalizeShape(bool[] mask, int origW, int origH, RectInt box, int normRes, float padRatio)
         {
-            float[] output = new float[normRes * normRes];
+            bool[] output = new bool[normRes * normRes];
 
             float padPixels = normRes * padRatio;
             float availW = normRes - (2f * padPixels);
@@ -294,7 +376,10 @@ namespace DrawingSystem.Scoring
 
                     if (srcX >= box.x && srcX < box.x + box.width && srcX >= 0 && srcX < origW)
                     {
-                        output[rowOffset + nx] = mask[srcRowOffset + srcX] ? 1f : 0f;
+                        if (mask[srcRowOffset + srcX])
+                        {
+                            output[rowOffset + nx] = true;
+                        }
                     }
                 }
             }
@@ -302,34 +387,82 @@ namespace DrawingSystem.Scoring
             return output;
         }
 
-        private static Texture2D GenerateHeatmap(float[] refNorm, float[] drawnNorm, int res)
+        /// <summary>
+        /// Morphological dilation to compute tolerance zone around reference lines.
+        /// </summary>
+        private static bool[] Dilate(bool[] source, int width, int height, int radius)
+        {
+            if (radius <= 0) return (bool[])source.Clone();
+
+            bool[] result = new bool[width * height];
+            int rSq = radius * radius;
+
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    if (!source[y * width + x]) continue;
+
+                    int minX = Mathf.Max(0, x - radius);
+                    int maxX = Mathf.Min(width - 1, x + radius);
+                    int minY = Mathf.Max(0, y - radius);
+                    int maxY = Mathf.Min(height - 1, y + radius);
+
+                    for (int ny = minY; ny <= maxY; ny++)
+                    {
+                        int dy = ny - y;
+                        int dySq = dy * dy;
+                        int row = ny * width;
+
+                        for (int nx = minX; nx <= maxX; nx++)
+                        {
+                            int dx = nx - x;
+                            if (dx * dx + dySq <= rSq)
+                            {
+                                result[row + nx] = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private static Texture2D GenerateHeatmap(bool[] refNorm, bool[] drawnNorm, bool[] dilatedRef, int res)
         {
             Texture2D heatmap = new Texture2D(res, res, TextureFormat.RGBA32, false);
             Color32[] mapPixels = new Color32[res * res];
 
             for (int i = 0; i < mapPixels.Length; i++)
             {
-                float r = refNorm[i];
-                float d = drawnNorm[i];
+                bool r = refNorm[i];
+                bool d = drawnNorm[i];
+                bool dNear = dilatedRef[i];
 
-                if (r > 0.5f && d > 0.5f)
+                if (r && d)
                 {
-                    // Green: Match
+                    // Green: Exact stroke match
                     mapPixels[i] = new Color32(0, 255, 0, 255);
                 }
-                else if (d > 0.5f && r <= 0.5f)
+                else if (d && dNear)
                 {
-                    // Red: Drawn outside of reference
+                    // Yellow-Green: In proximity tolerance
+                    mapPixels[i] = new Color32(180, 255, 0, 255);
+                }
+                else if (d && !dNear)
+                {
+                    // Red: Out of line / Scribble / Penalty
                     mapPixels[i] = new Color32(255, 30, 30, 255);
                 }
-                else if (r > 0.5f && d <= 0.5f)
+                else if (r && !d)
                 {
-                    // Blue/Cyan: Missing stroke
-                    mapPixels[i] = new Color32(50, 150, 255, 255);
+                    // Blue/Cyan: Missing reference line
+                    mapPixels[i] = new Color32(60, 140, 255, 255);
                 }
                 else
                 {
-                    // Transparent dark background
+                    // Dark background
                     mapPixels[i] = new Color32(20, 20, 20, 180);
                 }
             }
