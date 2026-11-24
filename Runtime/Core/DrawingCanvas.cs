@@ -608,8 +608,26 @@ namespace DrawingSystem
             }
 
             Texture2D drawnReadable = PNGExporter.ReadableFromRenderTexture(finalOutputTexture);
-            ScoringResult result = scorer.Evaluate(reference, drawnReadable);
-            Destroy(drawnReadable);
+            Texture2D refReadable = PNGExporter.EnsureReadable(reference);
+            bool ownsRef = refReadable != reference;
+
+            ScoringResult result;
+            try
+            {
+                result = scorer.Evaluate(refReadable, drawnReadable);
+            }
+            finally
+            {
+                Destroy(drawnReadable);
+                if (ownsRef && refReadable != null)
+                {
+#if UNITY_EDITOR
+                    DestroyImmediate(refReadable);
+#else
+                    Destroy(refReadable);
+#endif
+                }
+            }
 
             OnScoreEvaluated?.Invoke(result);
             return result;
