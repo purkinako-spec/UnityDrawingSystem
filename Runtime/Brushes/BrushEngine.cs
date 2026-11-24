@@ -59,13 +59,35 @@ namespace DrawingSystem.Brushes
         /// Thrown when the required shader cannot be found. Ensure the shader is included in
         /// the project (typically under <c>Runtime/Shaders/</c>).
         /// </exception>
+        private static Shader FindBrushShader()
+        {
+            // 1. 通常の名前で検索
+            Shader s = Shader.Find(ShaderName);
+            if (s != null) return s;
+
+            // 2. Hidden なしの代替名で検索
+            s = Shader.Find("DrawingSystem/BrushStamp");
+            if (s != null) return s;
+
+            // 3. Resources からロード
+            s = Resources.Load<Shader>("DrawingSystem/BrushStamp");
+            if (s != null) return s;
+
+            s = Resources.Load<Shader>("BrushStamp");
+            if (s != null) return s;
+
+            // 4. フォールバック
+            Debug.LogWarning($"[BrushEngine] Shader '{ShaderName}' not found via standard paths. Attempting fallback shader.");
+            return Shader.Find("Sprites/Default") ?? Shader.Find("UI/Default") ?? Shader.Find("Unlit/Texture");
+        }
+
         public BrushEngine()
         {
-            Shader brushShader = Shader.Find(ShaderName);
+            Shader brushShader = FindBrushShader();
             if (brushShader == null)
             {
                 Debug.LogError(
-                    $"[BrushEngine] Shader '{ShaderName}' not found. " +
+                    $"[BrushEngine] Shader '{ShaderName}' and fallbacks not found. " +
                     "Make sure it is included in the project and not stripped.");
                 throw new InvalidOperationException(
                     $"Required shader '{ShaderName}' could not be found.");
@@ -144,42 +166,105 @@ namespace DrawingSystem.Brushes
 
             var stampPositions = new List<Vector2>();
 
-            // Convert brush size to UV space (assuming square target for simplicity;
-            // for non-square targets, aspect ratio should be considered).
-            float brushSizeUV = size / target.width;
-            // Dense stamp spacing for smooth continuous strokes without visible dot artifacts
-            float spacing = brush != null ? Mathf.Min(brush.Spacing, 0.05f) : 0.05f;
-            float spacingUV = Mathf.Max(spacing * brushSizeUV, 0.0001f);
+            // 1px 最低サイズの保証
+            float effectiveSize = Mathf.Max(1.0f, size);
+            float brushSizeUV = effectiveSize / target.width;
+
+            // 動的スタンプ間隔：
+            // 大口径ブラシのときは間隔を適度に広げて負荷爆発を防ぐ（15%）
+            // 小口径ブラシ（1px〜3px）のときは線が途切れないようピクセル密度に合わせて密にする
+            float spacing;
+            if (effectiveSize <= 3.0f)
+            {
+                spacing = 0.5f;
+            }
+            else if (effectiveSize >= 30.0f)
+            {
+                spacing = 0.15f;
+            }
+            else
+            {
+                spacing = brush != null ? Mathf.Clamp(brush.Spacing, 0.08f, 0.25f) : 0.10f;
+            }
+
+            float spacingUV = Mathf.Max(spacing * brushSizeUV, 0.5f / target.width);
 
             Vector2 delta = toUV - fromUV;
             float distance = delta.magnitude;
 
             if (distance < 0.0001f)
             {
-                // 移動距離が極小の場合は前フレームで既に描画済みのため重複スタンプを防止
                 return stampPositions;
             }
 
-            int numStamps = Mathf.Max(1, Mathf.CeilToInt(distance / spacingUV));
+            int numStamps = Mathf.Clamp(Mathf.CeilToInt(distance / spacingUV), 1, 128);
 
-            // fromUV は前フレームの終点で既にスタンプ済みなので i = 1 から開始し、
-            // 始点の二重スタンプやフレーム境界での重なりによる「濃い点」を防止
-            for (int i = 1; i <= numStamps; i++)
+            // ブラシテクスチャの解決
+            Texture2D brushTex = (brush != null && brush.BrushTexture != null)
+                ? brush.BrushTexture
+                : defaultBrushTexture;
+
+            // マテリアル定数プロパティの設定（全スタンプ共通）
+            brushMaterial.SetTexture(PropBrushTex, brushTex);
+            brushMaterial.SetColor(PropColor, Color.white);
+            brushMaterial.SetFloat(PropHardness, effectiveSize <= 2.0f ? 1.0f : (brush != null ? brush.Hardness : 1.0f));
+            brushMaterial.SetFloat(PropOpacity, 1.0f);
+            brushMaterial.SetFloat(PropIsEraser, isEraser ? 1f : 0f);
+
+            // GPUレンダーターゲット設定（バッチ化: 全スタンプで1回だけ切り替え）
+            RenderTexture previousRT = RenderTexture.active;
+            try
             {
-                float t = (float)i / numStamps;
-                Vector2 pos = Vector2.Lerp(fromUV, toUV, t);
-                float pressure = Mathf.Lerp(fromPressure, toPressure, t);
-                float stampSize = brush != null ? brush.GetSize(pressure, size) : size;
+                RenderTexture.active = target;
+                GL.PushMatrix();
+                GL.LoadOrtho();
 
-                if (isEraser)
+                brushMaterial.SetPass(isEraser ? 1 : 0);
+
+                GL.Begin(GL.QUADS);
+
+                for (int i = 1; i <= numStamps; i++)
                 {
-                    Erase(target, brush, pos, pressure, stampSize);
+                    float t = (float)i / numStamps;
+                    Vector2 pos = Vector2.Lerp(fromUV, toUV, t);
+                    float pressure = Mathf.Lerp(fromPressure, toPressure, t);
+                    float stampSize = brush != null ? brush.GetSize(pressure, effectiveSize) : effectiveSize;
+                    stampSize = Mathf.Max(1.0f, stampSize);
+
+                    float opacity = brush != null ? brush.GetOpacity(pressure) : 1.0f;
+                    Color stampColor = new Color(color.r, color.g, color.b, opacity);
+
+                    GL.Color(stampColor);
+
+                    float halfU = (stampSize / target.width) * 0.5f;
+                    float halfV = (stampSize / target.height) * 0.5f;
+
+                    float left   = pos.x - halfU;
+                    float right  = pos.x + halfU;
+                    float bottom = pos.y - halfV;
+                    float top    = pos.y + halfV;
+
+                    GL.TexCoord2(0f, 0f);
+                    GL.Vertex3(left, bottom, 0f);
+
+                    GL.TexCoord2(1f, 0f);
+                    GL.Vertex3(right, bottom, 0f);
+
+                    GL.TexCoord2(1f, 1f);
+                    GL.Vertex3(right, top, 0f);
+
+                    GL.TexCoord2(0f, 1f);
+                    GL.Vertex3(left, top, 0f);
+
+                    stampPositions.Add(pos);
                 }
-                else
-                {
-                    Stamp(target, brush, pos, color, pressure, stampSize);
-                }
-                stampPositions.Add(pos);
+
+                GL.End();
+                GL.PopMatrix();
+            }
+            finally
+            {
+                RenderTexture.active = previousRT;
             }
 
             return stampPositions;
@@ -259,17 +344,19 @@ namespace DrawingSystem.Brushes
             // Calculate pressure-derived values
             float opacity = brush != null ? brush.GetOpacity(pressure) : 1.0f;
 
+            float effectiveSize = Mathf.Max(1.0f, size);
+
             // Convert brush size from pixels to UV space
-            float brushSizeU = size / target.width;
-            float brushSizeV = size / target.height;
+            float brushSizeU = effectiveSize / target.width;
+            float brushSizeV = effectiveSize / target.height;
 
             // Set material properties
             brushMaterial.SetTexture(PropBrushTex, brushTex);
-            brushMaterial.SetColor(PropColor, new Color(color.r, color.g, color.b, opacity));
+            brushMaterial.SetColor(PropColor, Color.white);
             brushMaterial.SetVector(PropBrushPos, new Vector4(uvPosition.x, uvPosition.y, 0f, 0f));
             brushMaterial.SetFloat(PropBrushSize, brushSizeU);
-            brushMaterial.SetFloat(PropHardness, brush != null ? brush.Hardness : 1.0f);
-            brushMaterial.SetFloat(PropOpacity, opacity);
+            brushMaterial.SetFloat(PropHardness, effectiveSize <= 2.0f ? 1.0f : (brush != null ? brush.Hardness : 1.0f));
+            brushMaterial.SetFloat(PropOpacity, 1.0f);
             brushMaterial.SetFloat(PropIsEraser, isEraser ? 1f : 0f);
 
             // Save current render target
@@ -296,6 +383,7 @@ namespace DrawingSystem.Brushes
 
                 // Draw a textured quad at the brush position
                 GL.Begin(GL.QUADS);
+                GL.Color(new Color(color.r, color.g, color.b, opacity));
 
                 GL.TexCoord2(0f, 0f);
                 GL.Vertex3(left, bottom, 0f);

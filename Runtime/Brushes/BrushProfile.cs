@@ -84,7 +84,7 @@ namespace DrawingSystem.Brushes
         /// The evaluated value is multiplied by <see cref="BaseOpacity"/>.
         /// </summary>
         [Tooltip("Curve mapping pressure to opacity multiplier.")]
-        public AnimationCurve PressureOpacityCurve = AnimationCurve.Linear(0f, 0.3f, 1f, 1f);
+        public AnimationCurve PressureOpacityCurve = AnimationCurve.Linear(0f, 1f, 1f, 1f);
 
         [Header("描画品質")]
 
@@ -130,8 +130,9 @@ namespace DrawingSystem.Brushes
         public float GetSize(float pressure, float overrideBaseSize = -1f)
         {
             float baseSize = overrideBaseSize > 0f ? overrideBaseSize : BaseSize;
+            if (baseSize <= 1.0f) return 1.0f; // 1px ブラシ時は筆圧による縮小で消えないよう固定
             float curveValue = PressureSizeCurve != null ? PressureSizeCurve.Evaluate(Mathf.Clamp01(pressure)) : pressure;
-            return Mathf.Lerp(baseSize * MinSizeRatio, baseSize, curveValue);
+            return Mathf.Max(1.0f, Mathf.Lerp(baseSize * MinSizeRatio, baseSize, curveValue));
         }
 
         /// <summary>
@@ -145,7 +146,9 @@ namespace DrawingSystem.Brushes
         /// </returns>
         public float GetOpacity(float pressure)
         {
-            return BaseOpacity * PressureOpacityCurve.Evaluate(pressure);
+            float curveVal = PressureOpacityCurve != null ? PressureOpacityCurve.Evaluate(Mathf.Clamp01(pressure)) : 1.0f;
+            // 描き初めや低筆圧時に線が薄くなりすぎるのを防ぎ、しっかりとした濃度を保つ
+            return BaseOpacity * Mathf.Clamp01(Mathf.Max(0.6f, curveVal));
         }
 
         /// <summary>

@@ -33,19 +33,22 @@ Shader "Hidden/DrawingSystem/BrushStamp"
     {
         float4 vertex : POSITION;
         float2 uv     : TEXCOORD0;
+        fixed4 color  : COLOR;
     };
 
     struct v2f
     {
-        float4 pos : SV_POSITION;
-        float2 uv  : TEXCOORD0;
+        float4 pos   : SV_POSITION;
+        float2 uv    : TEXCOORD0;
+        fixed4 color : COLOR;
     };
 
     v2f vert(appdata v)
     {
         v2f o;
-        o.pos = UnityObjectToClipPos(v.vertex);
-        o.uv  = v.uv;
+        o.pos   = UnityObjectToClipPos(v.vertex);
+        o.uv    = v.uv;
+        o.color = v.color;
         return o;
     }
 
@@ -72,12 +75,12 @@ Shader "Hidden/DrawingSystem/BrushStamp"
         float edgeStart = clamp(_Hardness * 0.9, 0.0, 0.9);
         float falloff = 1.0 - smoothstep(edgeStart, 1.0, t);
 
-        // Combine brush texture alpha, falloff, and stamp opacity.
-        float alpha = brushSample.a * falloff * _Opacity;
+        // Combine brush texture alpha, falloff, stamp opacity, and vertex color
+        float alpha = brushSample.a * falloff * i.color.a * _Opacity;
 
         // Build the output color.
         fixed4 col;
-        col.rgb = _Color.rgb;
+        col.rgb = i.color.rgb * _Color.rgb;
         col.a   = alpha * _Color.a;
 
         return col;
@@ -142,7 +145,7 @@ Shader "Hidden/DrawingSystem/BrushStamp"
                 float t = saturate(dist / radius);
                 float edgeStart = clamp(_Hardness * 0.9, 0.0, 0.9);
                 float falloff = 1.0 - smoothstep(edgeStart, 1.0, t);
-                float erase   = brushSample.a * falloff * _Opacity;
+                float erase   = brushSample.a * falloff * i.color.a * _Opacity;
 
                 return fixed4(0, 0, 0, erase);
             }

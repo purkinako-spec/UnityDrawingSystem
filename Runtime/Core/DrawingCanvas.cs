@@ -68,10 +68,17 @@ namespace DrawingSystem
         private BrushProfile currentBrush;
         private Color currentColor;
         private float currentSize;
+        private float penSize = 12f;
+        private float eraserSize = 24f;
         private bool isEraserMode;
 
         private Vector2? lastStrokeUV;
         private float lastStrokePressure;
+        private int lastStrokePixelX = -1;
+        private int lastStrokePixelY = -1;
+        private bool isCompositeDirty = false;
+        private bool isPointerPressed = false;
+        private bool isBlockedByUI = false;
         private float realtimeScoringTimer;
 
         // 手振れ補正用ステート
@@ -106,15 +113,73 @@ namespace DrawingSystem
         public event Action<RenderTexture> OnCanvasUpdated;
         public event Action<StrokeData> OnStrokeCompleted;
         public event Action<ScoringResult> OnScoreEvaluated;
+        public event Action<bool, float> OnToolModeChanged; // (isEraser, currentSize)
 
         // プロパティ
-        public LayerManager Layers => layerManager;
+        public LayerManager Layers
+        {
+            get
+            {
+                EnsureInitialized();
+                return layerManager;
+            }
+        }
         public StrokeRecorder Recorder => strokeRecorder;
         public UndoRedoManager UndoRedo => undoRedoManager;
         public RenderTexture OutputTexture => finalOutputTexture;
         public Color CurrentColor { get => currentColor; set => currentColor = value; }
-        public float CurrentSize { get => currentSize; set => currentSize = value; }
-        public bool IsEraserMode { get => isEraserMode; set => isEraserMode = value; }
+
+        public float PenSize
+        {
+            get => penSize;
+            set
+            {
+                penSize = Mathf.Max(1f, value);
+                if (!isEraserMode)
+                {
+                    currentSize = penSize;
+                    OnToolModeChanged?.Invoke(false, currentSize);
+                }
+            }
+        }
+
+        public float EraserSize
+        {
+            get => eraserSize;
+            set
+            {
+                eraserSize = Mathf.Max(1f, value);
+                if (isEraserMode)
+                {
+                    currentSize = eraserSize;
+                    OnToolModeChanged?.Invoke(true, currentSize);
+                }
+            }
+        }
+
+        public float CurrentSize
+        {
+            get => currentSize;
+            set
+            {
+                float val = Mathf.Max(1f, value);
+                currentSize = val;
+                if (isEraserMode) eraserSize = val;
+                else penSize = val;
+            }
+        }
+
+        public bool IsEraserMode
+        {
+            get => isEraserMode;
+            set
+            {
+                if (isEraserMode == value) return;
+                isEraserMode = value;
+                currentSize = isEraserMode ? eraserSize : penSize;
+                OnToolModeChanged?.Invoke(isEraserMode, currentSize);
+            }
+        }
         public BrushProfile CurrentBrush { get => currentBrush; set => currentBrush = value; }
         public ScriptableObject DefaultScorerAsset { get => defaultScorerAsset; set => defaultScorerAsset = value; }
         public Texture2D ReferenceImage { get => referenceImage; set => referenceImage = value; }
@@ -142,6 +207,17 @@ namespace DrawingSystem
             RefreshComposite();
         }
 
+        /// <summary>
+        /// キャンバスおよびモジュールが初期化されていることを保証します。
+        /// </summary>
+        public void EnsureInitialized()
+        {
+            if (layerManager == null)
+            {
+                InitializeCanvas();
+            }
+        }
+
         private void Awake()
         {
             InitializeCanvas();
@@ -162,6 +238,7 @@ namespace DrawingSystem
 
         private void InitializeCanvas()
         {
+            if (layerManager != null) return;
             // 自動でRawImageを検索して割り当て（未設定の場合のフォールバック）
             if (renderMode == CanvasRenderMode.ScreenSpaceUI && targetRawImage == null)
             {
@@ -191,7 +268,9 @@ namespace DrawingSystem
                 ? defaultBrushProfile
                 : ScriptableObject.CreateInstance<BrushProfile>();
             currentColor = defaultDrawColor;
+            penSize = defaultBrushSize;
             currentSize = defaultBrushSize;
+            eraserSize = Mathf.Max(24f, defaultBrushSize * 2f);
 
             layerManager.OnLayersChanged += RefreshComposite;
 
@@ -280,6 +359,20 @@ namespace DrawingSystem
             }
         }
 
+        private void LateUpdate()
+        {
+            if (isCompositeDirty)
+            {
+                RefreshComposite();
+                isCompositeDirty = false;
+            }
+        }
+
+        public void RequestCompositeRefresh()
+        {
+            isCompositeDirty = true;
+        }
+
         private void OnDestroy()
         {
             if (layerManager != null)
@@ -301,77 +394,112 @@ namespace DrawingSystem
         /// </summary>
         public void HandleInput(DrawingInputData input)
         {
-            if (layerManager.ActiveLayer == null) return;
+            if (layerManager?.ActiveLayer == null) return;
 
-            // UI要素（操作パネル、ボタンなど）をクリックした場合は描画を開始しない
-            if (input.Phase == InputPhase.Began && IsPointerOverBlockingUI(input.Position))
+            // 1. ポインターダウン時（押下開始）
+            if (input.Phase == InputPhase.Began)
             {
-                isCurrentlyDrawingStroke = false;
+                // UI上のクリックなら描画を完全にブロック
+                if (IsPointerOverBlockingUI(input.Position))
+                {
+                    isBlockedByUI = true;
+                    isPointerPressed = true;
+                    isCurrentlyDrawingStroke = false;
+                    return;
+                }
+
+                isBlockedByUI = false;
+                isPointerPressed = true;
+
+                // キャンバス内であればストローク開始
+                if (TryGetUVCoordinates(input.Position, out Vector2 uvBegan))
+                {
+                    if (lastStrokeUV.HasValue) EndCurrentStroke();
+                    isCurrentlyDrawingStroke = true;
+                    currentSmoothedUV = uvBegan;
+                    float initPressure = Mathf.Clamp01(Mathf.Max(0.25f, input.Pressure));
+                    currentSmoothedPressure = initPressure;
+                    isStabilizing = stabilization > 0.001f;
+                    BeginStrokeAt(uvBegan, initPressure, input.Tilt, input.IsEraser || isEraserMode);
+                }
+                else
+                {
+                    // キャンバス外から押下開始：ドラッグで入ってくるのを待機
+                    isCurrentlyDrawingStroke = false;
+                    lastStrokeUV = null;
+                }
                 return;
             }
 
-            // ストロークが開始されていない状態での移動は無視（UI上からドラッグしてキャンバスに入った場合など）
-            if (input.Phase == InputPhase.Moved && !isCurrentlyDrawingStroke)
+            // 2. ポインターアップ時（押下終了）
+            if (input.Phase == InputPhase.Ended || input.Phase == InputPhase.Cancelled)
             {
-                return;
-            }
-
-            // 入力座標をキャンバスのUV座標(0~1)に変換
-            if (!TryGetUVCoordinates(input.Position, out Vector2 uv))
-            {
-                if (input.Phase == InputPhase.Ended || input.Phase == InputPhase.Cancelled)
+                isPointerPressed = false;
+                isBlockedByUI = false;
+                isStabilizing = false;
+                if (isCurrentlyDrawingStroke)
                 {
                     EndCurrentStroke();
                 }
                 return;
             }
 
-            float pressure = Mathf.Clamp01(input.Pressure);
-            lastInputPressure = pressure;
-            if (!string.IsNullOrEmpty(input.DeviceName))
-            {
-                lastInputDevice = input.DeviceName;
-            }
-            bool useEraser = input.IsEraser || isEraserMode;
+            // 3. 移動・滞留中（Moved / Stationary）
+            if (isBlockedByUI) return;
 
-            switch (input.Phase)
+            // キャンバス内のUV座標を判定
+            bool insideCanvas = TryGetUVCoordinates(input.Position, out Vector2 uv);
+
+            if (insideCanvas)
             {
-                case InputPhase.Began:
-                    if (lastStrokeUV.HasValue)
-                    {
-                        EndCurrentStroke();
-                    }
+                float pressure = Mathf.Clamp01(Mathf.Max(0.20f, input.Pressure));
+                lastInputPressure = pressure;
+                if (!string.IsNullOrEmpty(input.DeviceName)) lastInputDevice = input.DeviceName;
+                bool useEraser = input.IsEraser || isEraserMode;
+
+                // キャンバス外からドラッグして入ってきた場合、ここでストロークを自動開始！
+                if (!isCurrentlyDrawingStroke)
+                {
                     isCurrentlyDrawingStroke = true;
                     currentSmoothedUV = uv;
                     currentSmoothedPressure = pressure;
                     isStabilizing = stabilization > 0.001f;
                     BeginStrokeAt(uv, pressure, input.Tilt, useEraser);
-                    break;
-
-                case InputPhase.Moved:
-                case InputPhase.Stationary:
-                    if (!isCurrentlyDrawingStroke) break;
-
-                    if (isStabilizing)
+                }
+                else
+                {
+                    // 既にストローク中
+                    if (!lastStrokeUV.HasValue)
                     {
-                        // 指数平滑化 (EMA): stabilization に応じて追従速度を調整し、手の微細な震えを吸収
-                        float lerpRate = Mathf.Lerp(1.0f, 0.12f, stabilization);
-                        currentSmoothedUV = Vector2.Lerp(currentSmoothedUV, uv, lerpRate);
-                        currentSmoothedPressure = Mathf.Lerp(currentSmoothedPressure, pressure, lerpRate);
-
-                        ContinueStrokeTo(currentSmoothedUV, currentSmoothedPressure, input.Tilt, useEraser);
+                        // キャンバス外に出てから再侵入した場合
+                        currentSmoothedUV = uv;
+                        currentSmoothedPressure = pressure;
+                        BeginStrokeAt(uv, pressure, input.Tilt, useEraser);
                     }
                     else
                     {
-                        ContinueStrokeTo(uv, pressure, input.Tilt, useEraser);
+                        if (isStabilizing)
+                        {
+                            float lerpRate = Mathf.Lerp(1.0f, 0.12f, stabilization);
+                            currentSmoothedUV = Vector2.Lerp(currentSmoothedUV, uv, lerpRate);
+                            currentSmoothedPressure = Mathf.Lerp(currentSmoothedPressure, pressure, lerpRate);
+                            ContinueStrokeTo(currentSmoothedUV, currentSmoothedPressure, input.Tilt, useEraser);
+                        }
+                        else
+                        {
+                            ContinueStrokeTo(uv, pressure, input.Tilt, useEraser);
+                        }
                     }
-                    break;
-
-                case InputPhase.Ended:
-                case InputPhase.Cancelled:
-                    isStabilizing = false;
-                    EndCurrentStroke();
-                    break;
+                }
+            }
+            else
+            {
+                // キャンバス外に抜けた場合：ストロークの接続を一時リセット
+                // （isPointerPressed は維持されるので、再び入ってきたら即座に描画再開可能）
+                if (isCurrentlyDrawingStroke && lastStrokeUV.HasValue)
+                {
+                    lastStrokeUV = null;
+                }
             }
         }
 
@@ -431,7 +559,11 @@ namespace DrawingSystem
 
             lastStrokeUV = uv;
             lastStrokePressure = pressure;
-            RefreshComposite();
+            int targetW = activeLayer.Width > 0 ? activeLayer.Width : resolutionWidth;
+            int targetH = activeLayer.Height > 0 ? activeLayer.Height : resolutionHeight;
+            lastStrokePixelX = Mathf.FloorToInt(uv.x * targetW);
+            lastStrokePixelY = Mathf.FloorToInt(uv.y * targetH);
+            RequestCompositeRefresh();
         }
 
         private void ContinueStrokeTo(Vector2 uv, float pressure, Vector2 tilt, bool isEraser)
@@ -444,6 +576,20 @@ namespace DrawingSystem
                 BeginStrokeAt(uv, pressure, tilt, isEraser);
                 return;
             }
+
+            // 同一ピクセル判定（ズーム時の重複スタンプ・無駄な再描画をスキップ）
+            int targetW = activeLayer.Width > 0 ? activeLayer.Width : resolutionWidth;
+            int targetH = activeLayer.Height > 0 ? activeLayer.Height : resolutionHeight;
+            int currPixelX = Mathf.FloorToInt(uv.x * targetW);
+            int currPixelY = Mathf.FloorToInt(uv.y * targetH);
+
+            if (lastStrokePixelX == currPixelX && lastStrokePixelY == currPixelY && Mathf.Abs(pressure - lastStrokePressure) < 0.05f)
+            {
+                return;
+            }
+
+            lastStrokePixelX = currPixelX;
+            lastStrokePixelY = currPixelY;
 
             var point = new StrokePoint
             {
@@ -468,7 +614,7 @@ namespace DrawingSystem
 
             lastStrokeUV = uv;
             lastStrokePressure = pressure;
-            RefreshComposite();
+            RequestCompositeRefresh();
         }
 
         private void EndCurrentStroke()
@@ -487,7 +633,15 @@ namespace DrawingSystem
             }
 
             lastStrokeUV = null;
+            lastStrokePixelX = -1;
+            lastStrokePixelY = -1;
             isCurrentlyDrawingStroke = false;
+
+            if (isCompositeDirty)
+            {
+                RefreshComposite();
+                isCompositeDirty = false;
+            }
         }
 
         /// <summary>

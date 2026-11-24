@@ -53,6 +53,8 @@ namespace DrawingSystem.Layers
         }
 
         public RenderTexture RenderTexture => renderTexture;
+        public int Width => renderTexture != null ? renderTexture.width : 0;
+        public int Height => renderTexture != null ? renderTexture.height : 0;
 
         public DrawingLayer(string name, int width, int height)
         {

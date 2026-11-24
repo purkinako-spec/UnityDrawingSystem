@@ -17,9 +17,26 @@ namespace DrawingSystem.Layers
         private static readonly int OpacityId = Shader.PropertyToID("_Opacity");
         private static readonly int BlendModeId = Shader.PropertyToID("_BlendMode");
 
+        private static Shader FindCompositeShader()
+        {
+            Shader s = Shader.Find("Hidden/DrawingSystem/LayerComposite");
+            if (s != null) return s;
+
+            s = Shader.Find("DrawingSystem/LayerComposite");
+            if (s != null) return s;
+
+            s = Resources.Load<Shader>("DrawingSystem/LayerComposite");
+            if (s != null) return s;
+
+            s = Resources.Load<Shader>("LayerComposite");
+            if (s != null) return s;
+
+            return null;
+        }
+
         public LayerCompositor()
         {
-            Shader shader = Shader.Find("Hidden/DrawingSystem/LayerComposite");
+            Shader shader = FindCompositeShader();
             if (shader == null)
             {
                 Debug.LogWarning("[DrawingSystem] LayerComposite shader not found. Falling back to default sprite or blit.");
