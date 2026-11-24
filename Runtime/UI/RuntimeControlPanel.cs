@@ -174,8 +174,7 @@ namespace DrawingSystem.UI
             btnRt.anchoredPosition = new Vector2(10, -10);
             btnRt.sizeDelta = new Vector2(110, 36);
 
-            var floatImg = toggleFloatingBtnGo.AddComponent<Image>();
-            floatImg.color = new Color(0.18f, 0.22f, 0.32f, 0.9f);
+            var floatImg = AddUIImage(toggleFloatingBtnGo, new Color(0.18f, 0.22f, 0.32f, 0.9f));
 
             var floatBtn = toggleFloatingBtnGo.AddComponent<Button>();
             floatBtn.targetGraphic = floatImg;
@@ -196,8 +195,7 @@ namespace DrawingSystem.UI
             panelRt.sizeDelta = new Vector2(panelWidth, 0);
             panelRt.anchoredPosition = Vector2.zero;
 
-            var panelBg = panelRoot.AddComponent<Image>();
-            panelBg.color = new Color(0.10f, 0.11f, 0.14f, 0.95f);
+            var panelBg = AddUIImage(panelRoot, new Color(0.10f, 0.11f, 0.14f, 0.95f));
 
             // ── ScrollRect (スクロール可能領域) ──────────────────────────────
             var scrollObj = new GameObject("ScrollRect");
@@ -215,15 +213,14 @@ namespace DrawingSystem.UI
             scroll.scrollSensitivity = 25f;
             scroll.movementType = ScrollRect.MovementType.Clamped;
 
-            // Viewport
+            // Viewport (RectMask2D: ステンシル不要・アルファ不要・URP完全対応)
             var vpObj = new GameObject("Viewport");
             vpObj.transform.SetParent(scrollObj.transform, false);
             var vpRt = vpObj.AddComponent<RectTransform>();
             vpRt.anchorMin = Vector2.zero;
             vpRt.anchorMax = Vector2.one;
             vpRt.sizeDelta = Vector2.zero;
-            vpObj.AddComponent<Image>().color = Color.clear;
-            vpObj.AddComponent<Mask>().showMaskGraphic = false;
+            vpObj.AddComponent<RectMask2D>();
             scroll.viewport = vpRt;
 
             // Content Container
@@ -350,8 +347,7 @@ namespace DrawingSystem.UI
             var colorInfoRow = CreateHRow(root, 30);
             var prevGo = new GameObject("ColorPreview");
             prevGo.transform.SetParent(colorInfoRow.transform, false);
-            colorPreview = prevGo.AddComponent<Image>();
-            colorPreview.color = targetCanvas?.CurrentColor ?? Color.black;
+            colorPreview = AddUIImage(prevGo, targetCanvas?.CurrentColor ?? Color.black);
             var prevLe = prevGo.AddComponent<LayoutElement>();
             prevLe.minWidth = 50; prevLe.minHeight = 28; prevLe.flexibleWidth = 0;
 
@@ -550,6 +546,10 @@ namespace DrawingSystem.UI
             });
             var qImg = quitBtn.GetComponent<Image>();
             if (qImg != null) qImg.color = new Color(0.75f, 0.18f, 0.18f);
+
+            // 全UI要素のレイヤーを "UI" レイヤーに確実に設定
+            int uiLayer = LayerMask.NameToLayer("UI");
+            if (uiLayer >= 0) SetLayerRecursively(canvasGo, uiLayer);
         }
 
         // ─── Layer List Rebuild ───────────────────────────────────────────────
@@ -574,8 +574,7 @@ namespace DrawingSystem.UI
 
                 var rowGo = new GameObject($"LayerRow_{i}");
                 rowGo.transform.SetParent(layerListContainer, false);
-                var rowImg = rowGo.AddComponent<Image>();
-                rowImg.color = isActive ? new Color(0.25f, 0.45f, 0.75f, 0.85f) : new Color(0.18f, 0.18f, 0.22f, 0.6f);
+                var rowImg = AddUIImage(rowGo, isActive ? new Color(0.25f, 0.45f, 0.75f, 0.85f) : new Color(0.18f, 0.18f, 0.22f, 0.6f));
 
                 var rowHlg = rowGo.AddComponent<HorizontalLayoutGroup>();
                 rowHlg.padding = new RectOffset(6, 6, 2, 2);
@@ -720,12 +719,43 @@ namespace DrawingSystem.UI
             public static readonly Color HeaderText = new Color(0.95f, 0.78f, 0.32f);
         }
 
+        private static Sprite cachedWhiteSprite;
+        private static Sprite GetWhiteSprite()
+        {
+            if (cachedWhiteSprite != null) return cachedWhiteSprite;
+            var tex = Texture2D.whiteTexture;
+            cachedWhiteSprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f));
+            cachedWhiteSprite.name = "UI_WhiteSprite";
+            return cachedWhiteSprite;
+        }
+
+        /// <summary>
+        /// URP/Built-in 両対応: 白スプライトと標準マテリアルを確実にアサインした Image を追加
+        /// </summary>
+        private static Image AddUIImage(GameObject go, Color color)
+        {
+            var img = go.AddComponent<Image>();
+            img.sprite = GetWhiteSprite();
+            img.material = Canvas.GetDefaultCanvasMaterial();
+            img.color = color;
+            return img;
+        }
+
+        private static void SetLayerRecursively(GameObject go, int layer)
+        {
+            if (go == null) return;
+            go.layer = layer;
+            foreach (Transform child in go.transform)
+            {
+                if (child != null) SetLayerRecursively(child.gameObject, layer);
+            }
+        }
+
         private static void CreateSectionHeader(Transform parent, string title)
         {
             var go = new GameObject("SectionHeader");
             go.transform.SetParent(parent, false);
-            var img = go.AddComponent<Image>();
-            img.color = StyleColor.SectionBg;
+            var img = AddUIImage(go, StyleColor.SectionBg);
             var le = go.AddComponent<LayoutElement>();
             le.minHeight = string.IsNullOrEmpty(title) ? 6 : 24;
 
@@ -787,6 +817,7 @@ namespace DrawingSystem.UI
             var txt = go.AddComponent<Text>();
             txt.text      = text;
             txt.font      = GetSafeFont();
+            txt.material  = Canvas.GetDefaultCanvasMaterial();
             txt.fontSize  = fontSize;
             txt.fontStyle = style;
             txt.color     = color;
@@ -802,8 +833,7 @@ namespace DrawingSystem.UI
         {
             var go  = new GameObject("Btn_" + title);
             go.transform.SetParent(parent, false);
-            var img = go.AddComponent<Image>();
-            img.color = StyleColor.ButtonBg;
+            var img = AddUIImage(go, StyleColor.ButtonBg);
 
             var btn = go.AddComponent<Button>();
             btn.targetGraphic = img;
@@ -863,7 +893,7 @@ namespace DrawingSystem.UI
             // 背景
             var bgGo  = new GameObject("Background");
             bgGo.transform.SetParent(go.transform, false);
-            bgGo.AddComponent<Image>().color = new Color(0.18f, 0.18f, 0.22f);
+            AddUIImage(bgGo, new Color(0.18f, 0.18f, 0.22f));
             var bgRt = bgGo.GetComponent<RectTransform>();
             bgRt.anchorMin = new Vector2(0, 0.25f);
             bgRt.anchorMax = new Vector2(1, 0.75f);
@@ -879,7 +909,7 @@ namespace DrawingSystem.UI
 
             var fillGo = new GameObject("Fill");
             fillGo.transform.SetParent(faGo.transform, false);
-            fillGo.AddComponent<Image>().color = new Color(0.28f, 0.58f, 0.95f);
+            var fillImg = AddUIImage(fillGo, new Color(0.28f, 0.58f, 0.95f));
             var fillRt = fillGo.GetComponent<RectTransform>();
             fillRt.sizeDelta = Vector2.zero;
 
@@ -893,8 +923,7 @@ namespace DrawingSystem.UI
 
             var handleGo = new GameObject("Handle");
             handleGo.transform.SetParent(haGo.transform, false);
-            var handleImg = handleGo.AddComponent<Image>();
-            handleImg.color = Color.white;
+            var handleImg = AddUIImage(handleGo, Color.white);
             var handleRt = handleGo.GetComponent<RectTransform>();
             handleRt.sizeDelta = new Vector2(14, 0);
 
@@ -919,13 +948,11 @@ namespace DrawingSystem.UI
             var le = go.AddComponent<LayoutElement>();
             le.minWidth = 30; le.minHeight = 26; le.flexibleWidth = 0;
 
-            var bgImg = go.AddComponent<Image>();
-            bgImg.color = new Color(0.2f, 0.2f, 0.25f);
+            var bgImg = AddUIImage(go, new Color(0.2f, 0.2f, 0.25f));
 
             var checkGo = new GameObject("Checkmark");
             checkGo.transform.SetParent(go.transform, false);
-            var checkImg = checkGo.AddComponent<Image>();
-            checkImg.color = new Color(0.2f, 0.8f, 0.4f);
+            var checkImg = AddUIImage(checkGo, new Color(0.2f, 0.8f, 0.4f));
             var chkRt = checkGo.GetComponent<RectTransform>();
             chkRt.anchorMin = new Vector2(0.2f, 0.2f);
             chkRt.anchorMax = new Vector2(0.8f, 0.8f);
