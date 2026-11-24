@@ -17,36 +17,40 @@ namespace DrawingSystem.Editor
             if (canvas == null) return;
 
             EditorGUILayout.Space(10);
-            EditorGUILayout.LabelField("Editor Actions (Play Mode Only)", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("リアルタイム操作 & レイヤー管理", EditorStyles.boldLabel);
 
-            EditorGUI.BeginDisabledGroup(!Application.isPlaying);
+            if (!Application.isPlaying)
+            {
+                EditorGUILayout.HelpBox("💡 Unity の [▶ 再生 (Play)] ボタンを押すと、画面上に「描画システム操作パネル」が自動生成され、リアルタイム描画・全レイヤー操作・採点機能が使用可能になります。", MessageType.Info);
+            }
 
-            // ── デバイス & 筆圧 ──────────────────────────────
-            EditorGUILayout.LabelField("リアルタイム ペン設定", EditorStyles.boldLabel);
+            // ── ペン設定（Edit モードでもデフォルト調整可能） ──────────────────────────────
+            canvas.CurrentColor = EditorGUILayout.ColorField("ペンの色 (Color)", canvas.CurrentColor);
+            canvas.CurrentSize = EditorGUILayout.Slider("太さ (Size)", canvas.CurrentSize, 1f, 150f);
+            canvas.Stabilization = EditorGUILayout.Slider("手振れ補正 (Smooth)", canvas.Stabilization, 0f, 1f);
+            canvas.IsEraserMode = EditorGUILayout.Toggle("消しゴムモード", canvas.IsEraserMode);
+
             if (Application.isPlaying)
             {
+                EditorGUILayout.Space(5);
+                EditorGUILayout.LabelField("入力デバイス情報", EditorStyles.boldLabel);
                 EditorGUILayout.LabelField("認識中デバイス", canvas.ActiveDeviceName, EditorStyles.helpBox);
                 EditorGUILayout.LabelField("直近の入力元", canvas.LastInputDevice, EditorStyles.helpBox);
                 EditorGUI.ProgressBar(EditorGUILayout.GetControlRect(), canvas.LastInputPressure, $"筆圧: {canvas.LastInputPressure * 100f:F0}%");
                 EditorGUILayout.Space(3);
+
+                if (GUILayout.Button("合成テクスチャを強制更新")) canvas.RefreshComposite();
+
+                EditorGUILayout.BeginHorizontal();
+                if (GUILayout.Button("Undo")) canvas.Undo();
+                if (GUILayout.Button("Redo")) canvas.Redo();
+                if (GUILayout.Button("Clear")) canvas.Clear();
+                EditorGUILayout.EndHorizontal();
             }
-
-            canvas.CurrentColor = EditorGUILayout.ColorField("ペンの色 (Color)", canvas.CurrentColor);
-            canvas.CurrentSize = EditorGUILayout.Slider("太さ (Size)", canvas.CurrentSize, 1f, 100f);
-            canvas.Stabilization = EditorGUILayout.Slider("手振れ補正 (Smooth)", canvas.Stabilization, 0f, 1f);
-            canvas.IsEraserMode = EditorGUILayout.Toggle("消しゴムモード", canvas.IsEraserMode);
-
-            EditorGUILayout.Space(5);
-            if (GUILayout.Button("合成テクスチャを強制更新")) canvas.RefreshComposite();
-
-            EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Undo")) canvas.Undo();
-            if (GUILayout.Button("Redo")) canvas.Redo();
-            EditorGUILayout.EndHorizontal();
 
             // ── レイヤーパネル ────────────────────────────────
             EditorGUILayout.Space(8);
-            layerFoldout = EditorGUILayout.Foldout(layerFoldout, "レイヤー", true, EditorStyles.foldoutHeader);
+            layerFoldout = EditorGUILayout.Foldout(layerFoldout, "レイヤー構成", true, EditorStyles.foldoutHeader);
             if (layerFoldout && Application.isPlaying && canvas.Layers != null)
             {
                 var lm = canvas.Layers;
@@ -158,15 +162,17 @@ namespace DrawingSystem.Editor
 
             // ── 採点 & エクスポート ───────────────────────────
             EditorGUILayout.Space(5);
-            EditorGUILayout.LabelField("採点テスト", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("採点 & エクスポートテスト (Playモード推奨)", EditorStyles.boldLabel);
+            
+            EditorGUI.BeginDisabledGroup(!Application.isPlaying);
+
             if (GUILayout.Button("見本と比較して採点を実行"))
             {
                 var result = canvas.EvaluateCurrentDrawing();
                 EditorUtility.DisplayDialog("採点結果", $"スコア: {result.Score * 100f:F1}%\nアルゴリズム: {result.ScorerName}", "OK");
             }
 
-            EditorGUILayout.Space(5);
-            EditorGUILayout.LabelField("エクスポートテスト", EditorStyles.boldLabel);
+            EditorGUILayout.Space(3);
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button("PNG 保存"))
             {

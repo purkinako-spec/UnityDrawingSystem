@@ -14,6 +14,7 @@ namespace DrawingSystem.UI
     /// ビルド後の実行環境でもインスペクターで調整可能なほぼすべての機能
     /// （ブラシ、レイヤー、カラーピッカー、採点難易度、保存、終了）を操作可能にする完全版ランタイムUI。
     /// </summary>
+    [ExecuteAlways]
     [DisallowMultipleComponent]
     [AddComponentMenu("Drawing System/Runtime Control Panel")]
     public class RuntimeControlPanel : MonoBehaviour
@@ -138,15 +139,23 @@ namespace DrawingSystem.UI
         }
 
         // ─── Build UI ─────────────────────────────────────────────────────────
-        private void BuildRuntimeUI()
+        public void BuildRuntimeUI()
         {
+            // 既存のUI階層があれば破棄
+            var oldCanvas = transform.Find("DrawingSystem_RuntimeUI");
+            if (oldCanvas != null)
+            {
+                if (Application.isPlaying) Destroy(oldCanvas.gameObject);
+                else DestroyImmediate(oldCanvas.gameObject);
+            }
+
             // ── Root Canvas ──────────────────────────────────────────────────
             var canvasGo = new GameObject("DrawingSystem_RuntimeUI");
             canvasGo.transform.SetParent(transform, false);
 
             uiCanvas = canvasGo.AddComponent<Canvas>();
             uiCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            uiCanvas.sortingOrder = 500; // 最前面だが描画RawImageはGraphicRaycaster外なら透過
+            uiCanvas.sortingOrder = 999; // 確実に最前面で表示
 
             var scaler = canvasGo.AddComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
@@ -732,14 +741,52 @@ namespace DrawingSystem.UI
             }
         }
 
+        private static Font cachedFont;
+
+        private static Font GetSafeFont()
+        {
+            if (cachedFont != null) return cachedFont;
+
+            cachedFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (cachedFont != null) return cachedFont;
+
+            cachedFont = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            if (cachedFont != null) return cachedFont;
+
+            string[] osFonts = { "Arial", "Segoe UI", "Yu Gothic UI", "Meiryo", "Helvetica" };
+            foreach (var fontName in osFonts)
+            {
+                try
+                {
+                    cachedFont = Font.CreateDynamicFontFromOSFont(fontName, 14);
+                    if (cachedFont != null) return cachedFont;
+                }
+                catch { }
+            }
+
+            var fonts = Resources.FindObjectsOfTypeAll<Font>();
+            if (fonts != null && fonts.Length > 0)
+            {
+                for (int i = 0; i < fonts.Length; i++)
+                {
+                    if (fonts[i] != null)
+                    {
+                        cachedFont = fonts[i];
+                        return cachedFont;
+                    }
+                }
+            }
+
+            return null;
+        }
+
         private static Text CreateLabel(Transform parent, string text, int fontSize, FontStyle style, Color color)
         {
             var go = new GameObject("Label");
             go.transform.SetParent(parent, false);
             var txt = go.AddComponent<Text>();
             txt.text      = text;
-            txt.font      = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf")
-                         ?? Resources.GetBuiltinResource<Font>("Arial.ttf");
+            txt.font      = GetSafeFont();
             txt.fontSize  = fontSize;
             txt.fontStyle = style;
             txt.color     = color;
