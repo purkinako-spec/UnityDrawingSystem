@@ -116,6 +116,17 @@ namespace DrawingSystem
         public float CurrentSize { get => currentSize; set => currentSize = value; }
         public bool IsEraserMode { get => isEraserMode; set => isEraserMode = value; }
         public BrushProfile CurrentBrush { get => currentBrush; set => currentBrush = value; }
+        public ScriptableObject DefaultScorerAsset { get => defaultScorerAsset; set => defaultScorerAsset = value; }
+        public Texture2D ReferenceImage { get => referenceImage; set => referenceImage = value; }
+
+        /// <summary>
+        /// 現在のアクティブレイヤーをクリア（全消去）します。
+        /// </summary>
+        public void Clear()
+        {
+            layerManager?.ActiveLayer?.Clear();
+            RefreshComposite();
+        }
 
         private void Awake()
         {
