@@ -59,7 +59,8 @@ namespace DrawingSystem.UI
         private Transform layerListContainer;
         private Slider layerOpacitySlider;
         private Text layerOpacityLabel;
-        private Dropdown blendModeDropdown;
+        private Button[] blendModeButtons;
+        private static readonly string[] BlendModeNames = { "通常", "乗算", "加算/Screen", "オーバーレイ" };
 
         // Scoring
         private Slider difficultySlider;
@@ -446,16 +447,23 @@ namespace DrawingSystem.UI
                 if (layerOpacityLabel != null) layerOpacityLabel.text = $"選択中レイヤー不透明度: {(val * 100f):F0}%";
             });
 
-            // 選択中レイヤーのブレンドモード
+            // 選択中レイヤーのブレンドモード切り替えボタン行
             CreateLabel(root, "合成モード (Blend Mode):", 12, FontStyle.Normal, Color.white);
-            blendModeDropdown = CreateDropdown(root,
-                new[] { "通常 (Normal)", "乗算 (Multiply)", "スクリーン (Screen)", "オーバーレイ (Overlay)" }, 0, idx =>
+            var blendRow = CreateHRow(root, 30);
+            blendModeButtons = new Button[BlendModeNames.Length];
+            for (int i = 0; i < BlendModeNames.Length; i++)
             {
-                var lm = targetCanvas?.Layers;
-                if (lm?.ActiveLayer == null) return;
-                lm.ActiveLayer.BlendMode = (LayerBlendMode)idx;
-                targetCanvas?.RefreshComposite();
-            });
+                int capturedIdx = i;
+                var b = CreateButton(blendRow.transform, BlendModeNames[i], () =>
+                {
+                    var lm = targetCanvas?.Layers;
+                    if (lm?.ActiveLayer == null) return;
+                    lm.ActiveLayer.BlendMode = (LayerBlendMode)capturedIdx;
+                    targetCanvas?.RefreshComposite();
+                    UpdateBlendModeButtons(capturedIdx);
+                });
+                blendModeButtons[i] = b;
+            }
 
             // 初期レイヤーリスト生成
             RebuildLayerList();
@@ -609,8 +617,24 @@ namespace DrawingSystem.UI
                 layerOpacitySlider.SetValueWithoutNotify(active.Opacity);
             if (layerOpacityLabel != null)
                 layerOpacityLabel.text = $"選択中レイヤー不透明度: {(active.Opacity * 100f):F0}%";
-            if (blendModeDropdown != null)
-                blendModeDropdown.SetValueWithoutNotify((int)active.BlendMode);
+
+            UpdateBlendModeButtons((int)active.BlendMode);
+        }
+
+        private void UpdateBlendModeButtons(int activeIndex)
+        {
+            if (blendModeButtons == null) return;
+            for (int i = 0; i < blendModeButtons.Length; i++)
+            {
+                if (blendModeButtons[i] == null) continue;
+                var img = blendModeButtons[i].GetComponent<Image>();
+                if (img != null)
+                {
+                    img.color = (i == activeIndex)
+                        ? new Color(0.28f, 0.58f, 0.95f) // 選択中ハイライト
+                        : StyleColor.ButtonBg;           // 通常
+                }
+            }
         }
 
         // ─── HSV Color Helpers ────────────────────────────────────────────────
@@ -869,34 +893,6 @@ namespace DrawingSystem.UI
                 toggle.onValueChanged.AddListener(val => onChanged(val));
 
             return toggle;
-        }
-
-        private static Dropdown CreateDropdown(Transform parent, string[] options, int defaultIndex, Action<int> onChanged)
-        {
-            var go = new GameObject("Dropdown");
-            go.transform.SetParent(parent, false);
-            var img = go.AddComponent<Image>();
-            img.color = new Color(0.22f, 0.22f, 0.28f);
-            var le = go.AddComponent<LayoutElement>();
-            le.minHeight = 32;
-
-            var dd = go.AddComponent<Dropdown>();
-            dd.captionText = CreateLabel(go.transform, options[defaultIndex], 12, FontStyle.Normal, Color.white);
-            dd.captionText.GetComponent<RectTransform>().anchorMin = new Vector2(0.05f, 0);
-            dd.captionText.GetComponent<RectTransform>().anchorMax = new Vector2(0.9f, 1);
-            dd.captionText.GetComponent<RectTransform>().sizeDelta = Vector2.zero;
-
-            dd.options = new List<Dropdown.OptionData>();
-            foreach (var opt in options)
-                dd.options.Add(new Dropdown.OptionData(opt));
-
-            dd.value = defaultIndex;
-            dd.RefreshShownValue();
-
-            if (onChanged != null)
-                dd.onValueChanged.AddListener(idx => onChanged(idx));
-
-            return dd;
         }
     }
 }
