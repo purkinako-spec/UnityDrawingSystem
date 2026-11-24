@@ -574,23 +574,25 @@ namespace DrawingSystem.UI
 
                 var rowGo = new GameObject($"LayerRow_{i}");
                 rowGo.transform.SetParent(layerListContainer, false);
-                var rowImg = AddUIImage(rowGo, isActive ? new Color(0.25f, 0.45f, 0.75f, 0.85f) : new Color(0.18f, 0.18f, 0.22f, 0.6f));
+                var rowImg = AddUIImage(rowGo, isActive ? new Color(0.25f, 0.45f, 0.75f, 0.5f) : new Color(0.15f, 0.16f, 0.20f, 0.5f));
 
                 var rowHlg = rowGo.AddComponent<HorizontalLayoutGroup>();
-                rowHlg.padding = new RectOffset(6, 6, 2, 2);
+                rowHlg.padding = new RectOffset(4, 4, 3, 3);
                 rowHlg.spacing = 6;
                 rowHlg.childForceExpandWidth  = false;
                 rowHlg.childForceExpandHeight = true;
-                rowHlg.childControlWidth  = false;
+                rowHlg.childControlWidth  = true; // 子のサイズを確実に制御
                 rowHlg.childControlHeight = true;
 
                 var rowLe = rowGo.AddComponent<LayoutElement>();
-                rowLe.minHeight = 30;
+                rowLe.minHeight = 32;
 
                 // 👁 表示/非表示トグルボタン
                 var visBtn = CreateButton(rowGo.transform, layer.IsVisible ? "👁" : "🚫", null);
                 var visLe = visBtn.GetComponent<LayoutElement>();
-                visLe.minWidth = 32; visLe.flexibleWidth = 0;
+                visLe.minWidth = 36;
+                visLe.preferredWidth = 36;
+                visLe.flexibleWidth = 0;
                 visBtn.onClick.AddListener(() =>
                 {
                     layer.IsVisible = !layer.IsVisible;
@@ -598,7 +600,7 @@ namespace DrawingSystem.UI
                     RebuildLayerList();
                 });
 
-                // レイヤー選択ボタン（アクティブ化）
+                // レイヤー選択ボタン（クリックで行全体がアクティブ化）
                 string displayName = $"{(isActive ? "▶ " : "   ")}{layer.LayerName}";
                 var selectBtn = CreateButton(rowGo.transform, displayName, () =>
                 {
@@ -607,9 +609,19 @@ namespace DrawingSystem.UI
                     RebuildLayerList();
                 });
                 var selLe = selectBtn.GetComponent<LayoutElement>();
-                selLe.flexibleWidth = 1;
+                selLe.minWidth = 140;
+                selLe.flexibleWidth = 1; // 横幅いっぱいに広げてクリックしやすくする
                 var selTxt = selectBtn.GetComponentInChildren<Text>();
                 if (selTxt != null) selTxt.alignment = TextAnchor.MiddleLeft;
+
+                var selImg = selectBtn.GetComponent<Image>();
+                if (selImg != null)
+                {
+                    selImg.color = isActive ? new Color(0.28f, 0.55f, 0.90f) : StyleColor.ButtonBg;
+                }
+
+                int uiLayer = LayerMask.NameToLayer("UI");
+                if (uiLayer >= 0) SetLayerRecursively(rowGo, uiLayer);
             }
 
             SyncActiveLayerControls();
@@ -815,14 +827,15 @@ namespace DrawingSystem.UI
             var go = new GameObject("Label");
             go.transform.SetParent(parent, false);
             var txt = go.AddComponent<Text>();
-            txt.text      = text;
-            txt.font      = GetSafeFont();
-            txt.material  = Canvas.GetDefaultCanvasMaterial();
-            txt.fontSize  = fontSize;
-            txt.fontStyle = style;
-            txt.color     = color;
-            txt.alignment = TextAnchor.MiddleLeft;
+            txt.text            = text;
+            txt.font            = GetSafeFont();
+            txt.material        = Canvas.GetDefaultCanvasMaterial();
+            txt.fontSize        = fontSize;
+            txt.fontStyle       = style;
+            txt.color           = color;
+            txt.alignment       = TextAnchor.MiddleLeft;
             txt.supportRichText = false;
+            txt.raycastTarget   = false; // ラベルがクリック判定を遮らないよう無効化
 
             var le = go.AddComponent<LayoutElement>();
             le.minHeight = fontSize + 8;
