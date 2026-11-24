@@ -25,3 +25,4 @@ Thumbs.db
 
 # Build and export outputs
 *.orig
+.aider*

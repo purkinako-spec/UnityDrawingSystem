@@ -414,7 +414,8 @@ namespace DrawingSystem
                 // キャンバス内であればストローク開始
                 if (TryGetUVCoordinates(input.Position, out Vector2 uvBegan))
                 {
-                    if (lastStrokeUV.HasValue) EndCurrentStroke();
+                    // 前回のストロークが残っていれば確実に終了させる（BeginStrokeAtの内部ガードで処理されるが念のため）
+                    if (isCurrentlyDrawingStroke) EndCurrentStroke();
                     isCurrentlyDrawingStroke = true;
                     currentSmoothedUV = uvBegan;
                     float initPressure = Mathf.Clamp01(Mathf.Max(0.25f, input.Pressure));
@@ -457,7 +458,7 @@ namespace DrawingSystem
                 if (!string.IsNullOrEmpty(input.DeviceName)) lastInputDevice = input.DeviceName;
                 bool useEraser = input.IsEraser || isEraserMode;
 
-                // キャンバス外からドラッグして入ってきた場合、ここでストロークを自動開始！
+                // キャンバス外からドラッグして入ってきた場合、ここでストロークを自動開始
                 if (!isCurrentlyDrawingStroke)
                 {
                     isCurrentlyDrawingStroke = true;
@@ -466,29 +467,29 @@ namespace DrawingSystem
                     isStabilizing = stabilization > 0.001f;
                     BeginStrokeAt(uv, pressure, input.Tilt, useEraser);
                 }
+                else if (!lastStrokeUV.HasValue)
+                {
+                    // キャンバス外に出てから再侵入した場合：
+                    // isCurrentlyDrawingStroke=true だが lastStrokeUV がリセット済み。
+                    // この時点でStrokeRecorderは前回のストロークを引き続き記録中なので
+                    // BeginStrokeAt内のガードで自動的にEndStroke→BeginStrokeされる。
+                    currentSmoothedUV = uv;
+                    currentSmoothedPressure = pressure;
+                    BeginStrokeAt(uv, pressure, input.Tilt, useEraser);
+                }
                 else
                 {
-                    // 既にストローク中
-                    if (!lastStrokeUV.HasValue)
+                    // 通常のストローク継続
+                    if (isStabilizing)
                     {
-                        // キャンバス外に出てから再侵入した場合
-                        currentSmoothedUV = uv;
-                        currentSmoothedPressure = pressure;
-                        BeginStrokeAt(uv, pressure, input.Tilt, useEraser);
+                        float lerpRate = Mathf.Lerp(1.0f, 0.12f, stabilization);
+                        currentSmoothedUV = Vector2.Lerp(currentSmoothedUV, uv, lerpRate);
+                        currentSmoothedPressure = Mathf.Lerp(currentSmoothedPressure, pressure, lerpRate);
+                        ContinueStrokeTo(currentSmoothedUV, currentSmoothedPressure, input.Tilt, useEraser);
                     }
                     else
                     {
-                        if (isStabilizing)
-                        {
-                            float lerpRate = Mathf.Lerp(1.0f, 0.12f, stabilization);
-                            currentSmoothedUV = Vector2.Lerp(currentSmoothedUV, uv, lerpRate);
-                            currentSmoothedPressure = Mathf.Lerp(currentSmoothedPressure, pressure, lerpRate);
-                            ContinueStrokeTo(currentSmoothedUV, currentSmoothedPressure, input.Tilt, useEraser);
-                        }
-                        else
-                        {
-                            ContinueStrokeTo(uv, pressure, input.Tilt, useEraser);
-                        }
+                        ContinueStrokeTo(uv, pressure, input.Tilt, useEraser);
                     }
                 }
             }
@@ -536,13 +537,22 @@ namespace DrawingSystem
             var activeLayer = layerManager.ActiveLayer;
             if (activeLayer == null) return;
 
+            // 既にStrokeRecorder が記録中なら先にEndStroke()してからBeginする
+            if (strokeRecorder.IsRecording)
+            {
+                strokeRecorder.EndStroke();
+            }
+
+            // 描き初めの筆圧を最低0.85f に引き上げ（タブレット接地瞬間の極小筆圧による掠れ防止）
+            float startPressure = Mathf.Max(0.85f, pressure);
+
             string brushId = currentBrush != null ? currentBrush.BrushId : "DefaultPen";
             strokeRecorder.BeginStroke(brushId, currentColor, currentSize, layerManager.ActiveLayerIndex, isEraser);
             
             var point = new StrokePoint
             {
                 Position = uv,
-                Pressure = pressure,
+                Pressure = startPressure,
                 Tilt = tilt,
                 Timestamp = Time.time
             };
@@ -550,15 +560,15 @@ namespace DrawingSystem
 
             if (isEraser)
             {
-                brushEngine.Erase(activeLayer.RenderTexture, currentBrush, uv, pressure, currentSize);
+                brushEngine.Erase(activeLayer.RenderTexture, currentBrush, uv, startPressure, currentSize);
             }
             else
             {
-                brushEngine.Stamp(activeLayer.RenderTexture, currentBrush, uv, currentColor, pressure, currentSize);
+                brushEngine.Stamp(activeLayer.RenderTexture, currentBrush, uv, currentColor, startPressure, currentSize);
             }
 
             lastStrokeUV = uv;
-            lastStrokePressure = pressure;
+            lastStrokePressure = startPressure;
             int targetW = activeLayer.Width > 0 ? activeLayer.Width : resolutionWidth;
             int targetH = activeLayer.Height > 0 ? activeLayer.Height : resolutionHeight;
             lastStrokePixelX = Mathf.FloorToInt(uv.x * targetW);
