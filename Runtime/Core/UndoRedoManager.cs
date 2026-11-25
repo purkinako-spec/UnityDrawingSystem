@@ -64,12 +64,16 @@ namespace DrawingSystem
     /// <summary>
     /// Command that clears all strokes on a specific layer, capturing a snapshot
     /// of the layer texture so the operation can be reversed.
+    /// StrokeRecorder のストローク履歴も同時に保存・復元します。
     /// </summary>
     public class ClearLayerCommand : IDrawCommand
     {
         private readonly int _layerIndex;
         private readonly RenderTexture _layerTexture;
+        private readonly StrokeRecorder _recorder;
         private Texture2D _snapshot;
+        // クリア実行時点のストローク履歴を保存
+        private List<StrokeData> _savedStrokes;
         private readonly Action _onRender;
 
         /// <summary>
@@ -77,22 +81,25 @@ namespace DrawingSystem
         /// </summary>
         /// <param name="layerIndex">Index of the layer to clear.</param>
         /// <param name="layerTexture">The <see cref="RenderTexture"/> backing the layer.</param>
+        /// <param name="recorder">StrokeRecorder to save/restore stroke history.</param>
         /// <param name="onRender">Callback invoked after execute/undo to refresh the canvas.</param>
         /// <exception cref="ArgumentNullException">
         /// Thrown if <paramref name="layerTexture"/> is <c>null</c>.
         /// </exception>
-        public ClearLayerCommand(int layerIndex, RenderTexture layerTexture, Action onRender)
+        public ClearLayerCommand(int layerIndex, RenderTexture layerTexture, StrokeRecorder recorder, Action onRender)
         {
             _layerIndex = layerIndex;
             _layerTexture = layerTexture ?? throw new ArgumentNullException(nameof(layerTexture));
+            _recorder = recorder;
             _onRender = onRender;
         }
 
         /// <inheritdoc />
         public void Execute()
         {
-            // Capture the current layer contents before clearing.
+            // クリア前にテクスチャスナップショットとストローク履歴を保存
             CaptureSnapshot();
+            SaveStrokeHistory();
 
             RenderTexture previous = RenderTexture.active;
             try
@@ -104,6 +111,9 @@ namespace DrawingSystem
             {
                 RenderTexture.active = previous;
             }
+
+            // StrokeRecorder のストロークもクリア（再描画がストロークを参照しないように）
+            _recorder?.Clear();
 
             _onRender?.Invoke();
         }
@@ -117,6 +127,7 @@ namespace DrawingSystem
                 return;
             }
 
+            // テクスチャを元に戻す
             RenderTexture previous = RenderTexture.active;
             try
             {
@@ -127,6 +138,9 @@ namespace DrawingSystem
             {
                 RenderTexture.active = previous;
             }
+
+            // ストローク履歴を元に戻す
+            RestoreStrokeHistory();
 
             _onRender?.Invoke();
         }
@@ -154,6 +168,36 @@ namespace DrawingSystem
             finally
             {
                 RenderTexture.active = previous;
+            }
+        }
+
+        private void SaveStrokeHistory()
+        {
+            if (_recorder == null) return;
+            var all = _recorder.GetAllStrokes();
+            // レイヤーに属するストロークのみ保存
+            _savedStrokes = new List<StrokeData>();
+            foreach (var s in all)
+            {
+                if (s.LayerIndex == _layerIndex)
+                    _savedStrokes.Add(s);
+            }
+        }
+
+        private void RestoreStrokeHistory()
+        {
+            if (_recorder == null || _savedStrokes == null) return;
+            // 現在の履歴から、このレイヤーのストロークを除去してから保存分を復元
+            var current = new List<StrokeData>(_recorder.GetAllStrokes());
+            _recorder.Clear();
+            foreach (var s in current)
+            {
+                if (s.LayerIndex != _layerIndex)
+                    _recorder.AddStrokeData(s);
+            }
+            foreach (var s in _savedStrokes)
+            {
+                _recorder.AddStrokeData(s);
             }
         }
     }

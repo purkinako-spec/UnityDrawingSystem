@@ -200,11 +200,34 @@ namespace DrawingSystem
 
         /// <summary>
         /// 現在のアクティブレイヤーをクリア（全消去）します。
+        /// Undo/Redo スタックにも記録します。
         /// </summary>
         public void Clear()
         {
-            layerManager?.ActiveLayer?.Clear();
-            RefreshComposite();
+            var activeLayer = layerManager?.ActiveLayer;
+            if (activeLayer == null) return;
+
+            // 描画中のストロークがあれば強制終了してからクリア
+            if (isCurrentlyDrawingStroke)
+            {
+                EndCurrentStroke();
+            }
+
+            // ポインター押下状態をリセット（Clear後に誤って点が描かれないようにする）
+            isPointerPressed = false;
+            isBlockedByUI = false;
+            isCurrentlyDrawingStroke = false;
+            lastStrokeUV = null;
+            lastStrokePixelX = -1;
+            lastStrokePixelY = -1;
+
+            // ClearLayerCommand で Undo 可能な形でクリアを実行
+            var cmd = new ClearLayerCommand(
+                layerManager.ActiveLayerIndex,
+                activeLayer.RenderTexture,
+                strokeRecorder,
+                RefreshComposite);
+            undoRedoManager.ExecuteCommand(cmd);
         }
 
         /// <summary>
@@ -447,6 +470,8 @@ namespace DrawingSystem
 
             // 3. 移動・滞留中（Moved / Stationary）
             if (isBlockedByUI) return;
+            // ポインターが押されていない状態の移動は描画しない
+            if (!isPointerPressed) return;
 
             // キャンバス内のUV座標を判定
             bool insideCanvas = TryGetUVCoordinates(input.Position, out Vector2 uv);
@@ -543,8 +568,9 @@ namespace DrawingSystem
                 strokeRecorder.EndStroke();
             }
 
-            // 描き初めの筆圧を最低0.85f に引き上げ（タブレット接地瞬間の極小筆圧による掠れ防止）
-            float startPressure = Mathf.Max(0.85f, pressure);
+            // 描き初めの筆圧補正：タブレット接地瞬間は極小筆圧（0.001〜0.05）になりがち。
+            // ただし過度に引き上げると常に太くなるため、0.5f を下限とする。
+            float startPressure = Mathf.Max(0.5f, pressure);
 
             string brushId = currentBrush != null ? currentBrush.BrushId : "DefaultPen";
             strokeRecorder.BeginStroke(brushId, currentColor, currentSize, layerManager.ActiveLayerIndex, isEraser);
