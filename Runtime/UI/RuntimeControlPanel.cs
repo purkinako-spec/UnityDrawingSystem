@@ -47,6 +47,8 @@ namespace DrawingSystem.UI
         private Text smoothLabel;
         private Button eraserBtn;
         private Image eraserBtnImg;
+        private Button eyedropperBtn;
+        private Image eyedropperBtnImg;
 
         // HSV Color picker
         private Slider hueSlider;
@@ -96,6 +98,8 @@ namespace DrawingSystem.UI
                 targetCanvas.OnScoreEvaluated += HandleScoreEvaluated;
                 targetCanvas.OnToolModeChanged -= HandleToolModeChanged;
                 targetCanvas.OnToolModeChanged += HandleToolModeChanged;
+                targetCanvas.OnColorPicked -= HandleColorPicked;
+                targetCanvas.OnColorPicked += HandleColorPicked;
             }
 
             SubscribeLayerEvents();
@@ -151,6 +155,7 @@ namespace DrawingSystem.UI
             {
                 targetCanvas.OnScoreEvaluated -= HandleScoreEvaluated;
                 targetCanvas.OnToolModeChanged -= HandleToolModeChanged;
+                targetCanvas.OnColorPicked -= HandleColorPicked;
             }
 
             UnsubscribeLayerEvents();
@@ -180,6 +185,19 @@ namespace DrawingSystem.UI
             if (eraserBtnImg != null)
             {
                 eraserBtnImg.color = isEraser ? new Color(0.85f, 0.3f, 0.3f) : StyleColor.ButtonBg;
+            }
+            if (eyedropperBtnImg != null && (targetCanvas == null || !targetCanvas.IsEyedropperMode))
+            {
+                eyedropperBtnImg.color = StyleColor.ButtonBg;
+            }
+        }
+
+        private void HandleColorPicked(Color col)
+        {
+            ApplyColor(col);
+            if (eyedropperBtnImg != null)
+            {
+                eyedropperBtnImg.color = StyleColor.ButtonBg;
             }
         }
 
@@ -398,7 +416,23 @@ namespace DrawingSystem.UI
             eraserBtn.onClick.AddListener(() =>
             {
                 if (targetCanvas == null) return;
+                targetCanvas.IsEyedropperMode = false;
+                if (eyedropperBtnImg != null) eyedropperBtnImg.color = StyleColor.ButtonBg;
                 targetCanvas.IsEraserMode = !targetCanvas.IsEraserMode;
+            });
+
+            eyedropperBtn = CreateButton(toolRow2.transform, "🔍 スポイト", null);
+            eyedropperBtnImg = eyedropperBtn.GetComponent<Image>();
+            eyedropperBtn.onClick.AddListener(() =>
+            {
+                if (targetCanvas == null) return;
+                targetCanvas.IsEyedropperMode = !targetCanvas.IsEyedropperMode;
+                if (eyedropperBtnImg != null)
+                {
+                    eyedropperBtnImg.color = targetCanvas.IsEyedropperMode
+                        ? new Color(0.25f, 0.65f, 0.85f)
+                        : StyleColor.ButtonBg;
+                }
             });
 
             // ════════════════════════════════════════════════════════════════

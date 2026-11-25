@@ -71,6 +71,8 @@ namespace DrawingSystem
         private float penSize = 12f;
         private float eraserSize = 24f;
         private bool isEraserMode;
+        private bool isEyedropperMode;
+        private Texture2D eyedropperReadTex; // スポイト読み取り用の再利用テクスチャ
 
         private Vector2? lastStrokeUV;
         private float lastStrokePressure;
@@ -114,6 +116,7 @@ namespace DrawingSystem
         public event Action<StrokeData> OnStrokeCompleted;
         public event Action<ScoringResult> OnScoreEvaluated;
         public event Action<bool, float> OnToolModeChanged; // (isEraser, currentSize)
+        public event Action<Color> OnColorPicked; // スポイトで色を取得した時
 
         // プロパティ
         public LayerManager Layers
@@ -181,6 +184,17 @@ namespace DrawingSystem
             }
         }
         public BrushProfile CurrentBrush { get => currentBrush; set => currentBrush = value; }
+
+        /// <summary>
+        /// スポイト（カラーピッカー）モードの ON/OFF。
+        /// ON にするとクリックで描画せず色を取得し、自動的に OFF に戻ります。
+        /// </summary>
+        public bool IsEyedropperMode
+        {
+            get => isEyedropperMode;
+            set => isEyedropperMode = value;
+        }
+
         public ScriptableObject DefaultScorerAsset { get => defaultScorerAsset; set => defaultScorerAsset = value; }
         public Texture2D ReferenceImage { get => referenceImage; set => referenceImage = value; }
         public Color BackgroundColor
@@ -410,6 +424,11 @@ namespace DrawingSystem
                 if (finalOutputTexture.IsCreated()) finalOutputTexture.Release();
                 Destroy(finalOutputTexture);
             }
+
+            if (eyedropperReadTex != null)
+            {
+                Destroy(eyedropperReadTex);
+            }
         }
 
         /// <summary>
@@ -432,6 +451,24 @@ namespace DrawingSystem
                 }
 
                 isBlockedByUI = false;
+
+                // スポイトモード: キャンバス上の色を取得して自動OFF
+                if (isEyedropperMode)
+                {
+                    if (TryGetUVCoordinates(input.Position, out Vector2 eyeUV))
+                    {
+                        Color pickedColor = PickColorAtUV(eyeUV);
+                        currentColor = pickedColor;
+                        isEraserMode = false;
+                        currentSize = penSize;
+                        OnColorPicked?.Invoke(pickedColor);
+                        OnToolModeChanged?.Invoke(false, currentSize);
+                    }
+                    isEyedropperMode = false;
+                    isPointerPressed = false;
+                    return;
+                }
+
                 isPointerPressed = true;
 
                 // キャンバス内であればストローク開始
@@ -926,5 +963,30 @@ namespace DrawingSystem
         }
 
         #endregion
+
+        /// <summary>
+        /// 指定UV座標のピクセル色を合成結果テクスチャから取得します。
+        /// </summary>
+        private Color PickColorAtUV(Vector2 uv)
+        {
+            if (finalOutputTexture == null) return Color.black;
+            int px = Mathf.Clamp(Mathf.FloorToInt(uv.x * finalOutputTexture.width), 0, finalOutputTexture.width - 1);
+            int py = Mathf.Clamp(Mathf.FloorToInt(uv.y * finalOutputTexture.height), 0, finalOutputTexture.height - 1);
+            if (eyedropperReadTex == null || eyedropperReadTex.width != 1)
+                eyedropperReadTex = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+
+            RenderTexture prev = RenderTexture.active;
+            try
+            {
+                RenderTexture.active = finalOutputTexture;
+                eyedropperReadTex.ReadPixels(new Rect(px, py, 1, 1), 0, 0);
+                eyedropperReadTex.Apply(false);
+            }
+            finally
+            {
+                RenderTexture.active = prev;
+            }
+            return eyedropperReadTex.GetPixel(0, 0);
+        }
     }
 }
