@@ -48,7 +48,7 @@ namespace DrawingSystem.Scoring
             set => difficulty = Mathf.Clamp01(value);
         }
 
-        public string Name => "Normalized Shape (Invariant)";
+        public virtual string Name => "Normalized Shape (Invariant)";
 
         public ScoringResult Evaluate(Texture2D reference, Texture2D drawn)
         {
@@ -83,8 +83,12 @@ namespace DrawingSystem.Scoring
             }
 
             // 2. Crop and normalize both shapes to normalizedResolution x normalizedResolution
-            bool[] refNorm = NormalizeShape(refMask, reference.width, reference.height, refBox, normalizedResolution, paddingRatio);
-            bool[] drawnNorm = NormalizeShape(drawnMask, drawn.width, drawn.height, drawnBox, normalizedResolution, paddingRatio);
+            bool[] refNorm = PostProcessNormalizedMask(
+                NormalizeShape(refMask, reference.width, reference.height, refBox, normalizedResolution, paddingRatio),
+                normalizedResolution);
+            bool[] drawnNorm = PostProcessNormalizedMask(
+                NormalizeShape(drawnMask, drawn.width, drawn.height, drawnBox, normalizedResolution, paddingRatio),
+                normalizedResolution);
 
             // 3. Difficulty-adaptive Proximity Dilation:
             // Easy (difficulty=0) => radius ~ 12px (forgives slight hand shakes / offsets)
@@ -159,6 +163,14 @@ namespace DrawingSystem.Scoring
                 Heatmap = heatmap,
                 Details = details
             };
+        }
+
+        /// <summary>
+        /// Hook for subclasses to post-process normalized binary masks before scoring (e.g. contour extraction).
+        /// </summary>
+        protected virtual bool[] PostProcessNormalizedMask(bool[] normalizedMask, int resolution)
+        {
+            return normalizedMask;
         }
 
         /// <summary>
