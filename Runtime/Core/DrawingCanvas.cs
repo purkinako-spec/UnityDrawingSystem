@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
@@ -452,17 +453,16 @@ namespace DrawingSystem
 
                 isBlockedByUI = false;
 
-                // スポイトモード: キャンバス上の色を取得して自動OFF
+                // スポイトモード: キャンバス内外から色を取得して自動OFF
                 if (isEyedropperMode)
                 {
                     if (TryGetUVCoordinates(input.Position, out Vector2 eyeUV))
                     {
-                        Color pickedColor = PickColorAtUV(eyeUV);
-                        currentColor = pickedColor;
-                        isEraserMode = false;
-                        currentSize = penSize;
-                        OnColorPicked?.Invoke(pickedColor);
-                        OnToolModeChanged?.Invoke(false, currentSize);
+                        ApplyPickedColor(PickColorAtUV(eyeUV));
+                    }
+                    else
+                    {
+                        StartCoroutine(PickColorFromScreenCoroutine(input.Position));
                     }
                     isEyedropperMode = false;
                     isPointerPressed = false;
@@ -987,6 +987,48 @@ namespace DrawingSystem
                 RenderTexture.active = prev;
             }
             return eyedropperReadTex.GetPixel(0, 0);
+        }
+
+        /// <summary>
+        /// キャンバス外のスクリーン座標からフレーム描画完了後にピクセル色を取得します。
+        /// </summary>
+        private IEnumerator PickColorFromScreenCoroutine(Vector2 screenPosition)
+        {
+            yield return new WaitForEndOfFrame();
+
+            if (Screen.width <= 0 || Screen.height <= 0) yield break;
+
+            int px = Mathf.Clamp(Mathf.FloorToInt(screenPosition.x), 0, Screen.width - 1);
+            int py = Mathf.Clamp(Mathf.FloorToInt(screenPosition.y), 0, Screen.height - 1);
+
+            if (eyedropperReadTex == null || eyedropperReadTex.width != 1)
+                eyedropperReadTex = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+
+            RenderTexture prev = RenderTexture.active;
+            try
+            {
+                RenderTexture.active = null;
+                eyedropperReadTex.ReadPixels(new Rect(px, py, 1, 1), 0, 0);
+                eyedropperReadTex.Apply(false);
+            }
+            finally
+            {
+                RenderTexture.active = prev;
+            }
+
+            ApplyPickedColor(eyedropperReadTex.GetPixel(0, 0));
+        }
+
+        /// <summary>
+        /// スポイトで取得した色をペン色へ反映し、消しゴム解除とイベント発火を行います。
+        /// </summary>
+        private void ApplyPickedColor(Color pickedColor)
+        {
+            currentColor = pickedColor;
+            isEraserMode = false;
+            currentSize = penSize;
+            OnColorPicked?.Invoke(pickedColor);
+            OnToolModeChanged?.Invoke(false, currentSize);
         }
     }
 }
