@@ -60,6 +60,11 @@ namespace DrawingSystem
             Pen pen = Pen.current;
             if (pen != null)
             {
+                if (pen.inRange.isPressed || pen.wasUpdatedThisFrame)
+                {
+                    _lastPenTime = Time.unscaledTime;
+                }
+
                 bool isContact = pen.tip.isPressed || pen.eraser.isPressed;
                 float rawPressure = pen.pressure.ReadValue();
                 bool hasPressure = rawPressure > 0.005f;
@@ -80,8 +85,8 @@ namespace DrawingSystem
                         penPhase = InputPhase.Moved;
                     }
 
-                    float pressure = rawPressure > 0.05f ? Mathf.Clamp01(rawPressure) : Mathf.Max(0.30f, _lastValidPressure * 0.5f);
-                    if (rawPressure > 0.05f) _lastValidPressure = pressure;
+                    float pressure = rawPressure > 0.005f ? Mathf.Clamp01(rawPressure) : 0.01f;
+                    if (rawPressure > 0.005f) _lastValidPressure = pressure;
 
                     var penData = new DrawingInputData
                     {
@@ -292,6 +297,11 @@ namespace DrawingSystem
 
             if (pen != null)
             {
+                if (pen.inRange.isPressed || pen.wasUpdatedThisFrame)
+                {
+                    _lastPenTime = Time.unscaledTime;
+                }
+
                 bool isContact = pen.tip.isPressed || pen.eraser.isPressed;
                 float rawPressure = pen.pressure.ReadValue();
                 bool hasPressure = rawPressure > 0.005f;
@@ -302,6 +312,7 @@ namespace DrawingSystem
                 if (isPenActive)
                 {
                     _lastPenTime = Time.unscaledTime;
+                    _isMouseDrawing = false;
 
                     InputPhase phase;
                     if (!_isPenDrawing)
@@ -314,8 +325,8 @@ namespace DrawingSystem
                         phase = InputPhase.Moved;
                     }
 
-                    float pressure = rawPressure > 0.05f ? Mathf.Clamp01(rawPressure) : Mathf.Max(0.30f, _lastValidPressure * 0.5f);
-                    if (rawPressure > 0.05f) _lastValidPressure = pressure;
+                    float pressure = rawPressure > 0.005f ? Mathf.Clamp01(rawPressure) : 0.01f;
+                    if (rawPressure > 0.005f) _lastValidPressure = pressure;
 
                     Vector2 tilt = pen.tilt.ReadValue();
                     bool isEraser = pen.eraser.isPressed;

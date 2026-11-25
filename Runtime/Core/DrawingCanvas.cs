@@ -351,7 +351,7 @@ namespace DrawingSystem
         {
             HandleKeyboardShortcuts();
 
-            if (enableRealtimeScoring && referenceImage != null)
+            if (enableRealtimeScoring && referenceImage != null && !isCurrentlyDrawingStroke)
             {
                 realtimeScoringTimer += Time.deltaTime;
                 if (realtimeScoringTimer >= realtimeScoringInterval)
@@ -478,7 +478,7 @@ namespace DrawingSystem
                     if (isCurrentlyDrawingStroke) EndCurrentStroke();
                     isCurrentlyDrawingStroke = true;
                     currentSmoothedUV = uvBegan;
-                    float initPressure = Mathf.Clamp01(Mathf.Max(0.25f, input.Pressure));
+                    float initPressure = Mathf.Clamp01(input.Pressure);
                     currentSmoothedPressure = initPressure;
                     isStabilizing = stabilization > 0.001f;
                     BeginStrokeAt(uvBegan, initPressure, input.Tilt, input.IsEraser || isEraserMode);
@@ -515,7 +515,7 @@ namespace DrawingSystem
 
             if (insideCanvas)
             {
-                float pressure = Mathf.Clamp01(Mathf.Max(0.20f, input.Pressure));
+                float pressure = Mathf.Clamp01(input.Pressure);
                 lastInputPressure = pressure;
                 if (!string.IsNullOrEmpty(input.DeviceName)) lastInputDevice = input.DeviceName;
                 bool useEraser = input.IsEraser || isEraserMode;
@@ -605,9 +605,7 @@ namespace DrawingSystem
                 strokeRecorder.EndStroke();
             }
 
-            // 描き初めの筆圧補正：タブレット接地瞬間は極小筆圧（0.001〜0.05）になりがち。
-            // ただし過度に引き上げると常に太くなるため、0.5f を下限とする。
-            float startPressure = Mathf.Max(0.5f, pressure);
+            float startPressure = Mathf.Clamp01(pressure);
 
             string brushId = currentBrush != null ? currentBrush.BrushId : "DefaultPen";
             strokeRecorder.BeginStroke(brushId, currentColor, currentSize, layerManager.ActiveLayerIndex, isEraser);
@@ -682,7 +680,8 @@ namespace DrawingSystem
                 lastStrokePressure,
                 pressure,
                 currentSize,
-                isEraser
+                isEraser,
+                null
             );
 
             lastStrokeUV = uv;

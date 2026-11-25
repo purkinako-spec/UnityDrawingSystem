@@ -159,12 +159,24 @@ namespace DrawingSystem.Brushes
                                                Color color, float fromPressure, float toPressure,
                                                float size, bool isEraser = false)
         {
+            var stampPositions = new List<Vector2>();
+            DrawStrokeBetween(target, brush, fromUV, toUV, color, fromPressure, toPressure, size, isEraser, stampPositions);
+            return stampPositions;
+        }
+
+        /// <summary>
+        /// Zero-allocation variant of <see cref="DrawStrokeBetween"/>.
+        /// If <paramref name="stampPositions"/> is non-null, rendered stamp UVs are appended to it.
+        /// </summary>
+        public void DrawStrokeBetween(RenderTexture target, BrushProfile brush,
+                                      Vector2 fromUV, Vector2 toUV,
+                                      Color color, float fromPressure, float toPressure,
+                                      float size, bool isEraser, List<Vector2> stampPositions)
+        {
             ThrowIfDisposed();
 
             if (target == null)
                 throw new ArgumentNullException(nameof(target));
-
-            var stampPositions = new List<Vector2>();
 
             // 1px 最低サイズの保証
             float effectiveSize = Mathf.Max(1.0f, size);
@@ -194,7 +206,7 @@ namespace DrawingSystem.Brushes
 
             if (distance < 0.0001f)
             {
-                return stampPositions;
+                return;
             }
 
             int numStamps = Mathf.Clamp(Mathf.CeilToInt(distance / spacingUV), 1, 128);
@@ -256,7 +268,7 @@ namespace DrawingSystem.Brushes
                     GL.TexCoord2(0f, 1f);
                     GL.Vertex3(left, top, 0f);
 
-                    stampPositions.Add(pos);
+                    stampPositions?.Add(pos);
                 }
 
                 GL.End();
@@ -266,8 +278,6 @@ namespace DrawingSystem.Brushes
             {
                 RenderTexture.active = previousRT;
             }
-
-            return stampPositions;
         }
 
         /// <summary>
@@ -343,8 +353,8 @@ namespace DrawingSystem.Brushes
 
             // Calculate pressure-derived values
             float opacity = brush != null ? brush.GetOpacity(pressure) : 1.0f;
-
-            float effectiveSize = Mathf.Max(1.0f, size);
+            float stampSize = brush != null ? brush.GetSize(pressure, size) : size;
+            float effectiveSize = Mathf.Max(1.0f, stampSize);
 
             // Convert brush size from pixels to UV space
             float brushSizeU = effectiveSize / target.width;
