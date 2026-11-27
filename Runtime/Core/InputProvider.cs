@@ -60,7 +60,7 @@ namespace DrawingSystem
             Pen pen = Pen.current;
             if (pen != null)
             {
-                if (pen.inRange.isPressed || pen.wasUpdatedThisFrame)
+                if (pen.inRange.isPressed)
                 {
                     _lastPenTime = Time.unscaledTime;
                 }
@@ -297,7 +297,7 @@ namespace DrawingSystem
 
             if (pen != null)
             {
-                if (pen.inRange.isPressed || pen.wasUpdatedThisFrame)
+                if (pen.inRange.isPressed)
                 {
                     _lastPenTime = Time.unscaledTime;
                 }
