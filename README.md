@@ -155,3 +155,53 @@ UnityDrawingSystem/
 └── Editor/
     └── DrawingCanvasEditor.cs        # インスペクター拡張GUI
 ```
+
+
+---
+
+## 🎛️ UI連携・ボタン / スライダー割り当てリファレンス
+
+各UIスクリプト（`DrawingUI.cs`, `ColorPickerUI.cs`, `LayerPanelUI.cs`, `RuntimeControlPanel.cs`）における、機能ごとのUI変数と接続先のセッタ・メソッド一覧です。
+
+### 1. ブラシ・描画ツール機能
+| 操作内容 | UI側の変数 | 割り当てるセッタ / メソッド（`DrawingCanvas` 等） |
+| :--- | :--- | :--- |
+| **ブラシサイズ** | `brushSizeSlider` (`Slider`) | `targetCanvas.CurrentSize = val` |
+| **スムージング** | `smoothSlider` (`Slider`) | `RuntimeControlPanel` 内で生成・設定 |
+| **消しゴム切替** | `eraserToggle` (`Toggle`) / `eraserBtn` (`Button`) | `targetCanvas.IsEraserMode = val` |
+| **スポイト切替** | `eyedropperBtn` (`Button`) | `RuntimeControlPanel` 内でツールモード切替 |
+| **Undo / Redo** | `undoButton` / `redoButton` (`Button`) | `targetCanvas.Undo()` / `targetCanvas.Redo()` |
+
+### 2. カラー選択機能（`ColorPickerUI.cs` / `RuntimeControlPanel.cs`）
+| 操作内容 | UI側の変数 | 割り当てるセッタ / メソッド |
+| :--- | :--- | :--- |
+| **RGBスライダー** | `redSlider`, `greenSlider`, `blueSlider` (`Slider`) | `UpdateColorFromSliders()` → `OnColorChanged` → `targetCanvas.CurrentColor = col` |
+| **HSVスライダー** | `hueSlider`, `satSlider`, `valSlider` (`Slider`) | `RuntimeControlPanel` 内でHSVからRGB変換して色設定 |
+| **プリセット色** | `presetColorButtons` (`Button[]`) | `SetColor(btnColor)` |
+| **色セッタ** | — | `colorPicker.SetColor(Color color)` / `targetCanvas.CurrentColor` |
+
+### 3. レイヤー機能（`LayerPanelUI.cs` / `RuntimeControlPanel.cs`）
+| 操作内容 | UI側の変数 | 割り当てるセッタ / メソッド（`LayerManager` / `DrawingCanvas`） |
+| :--- | :--- | :--- |
+| **スクロール領域** | `layerListContent` (`Transform`) / `layerListContainer` (`RectTransform`) | `RefreshUI()` で行オブジェクトを動的生成・配置 |
+| **レイヤー追加** | `addLayerButton` (`Button`) | `AddLayer()` → `canvas.Layers.AddLayer()` + `canvas.RefreshComposite()` |
+| **レイヤー削除** | `removeLayerButton` (`Button`) | `RemoveActiveLayer()` → `lm.RemoveLayer(lm.ActiveLayerIndex)` + `canvas.RefreshComposite()` |
+| **レイヤー選択** | 各行の `Button` (`selBtn`) | `lm.SetActiveLayer(capturedIndex)` + `canvas.RefreshComposite()` |
+| **不透明度** | `layerOpacitySlider` (`Slider`) | `layerOpacitySlider.SetValueWithoutNotify(...)` / アクティブレイヤーの不透明度更新 |
+| **ブレンドモード** | `blendModeButtons` (`Button[]`) | `UpdateBlendModeButtons(int activeIdx)` |
+
+### 4. 保存・エクスポート機能（`DrawingUI.cs`）
+| 操作内容 | UI側の変数 | 割り当てるメソッド |
+| :--- | :--- | :--- |
+| **PNG保存** | `exportPngButton` (`Button`) | `OnExportPNGClicked()` → `targetCanvas.ExportPNG(path)` |
+| **JPG保存** | `exportJpgButton` (`Button`) | `OnExportJPGClicked()` → `targetCanvas.ExportJPG(path)` |
+| **SVG保存** | `exportSvgButton` (`Button`) | `OnExportSVGClicked()` → `targetCanvas.ExportSVG(path)` |
+
+### 5. 採点（スコアリング）機能（`DrawingUI.cs` / `RuntimeControlPanel.cs`）
+| 操作内容 | UI側の変数 | 割り当てるセッタ / メソッド |
+| :--- | :--- | :--- |
+| **採点実行** | `evaluateButton` (`Button`) | `OnEvaluateClicked()` → `targetCanvas.EvaluateCurrentDrawing()` |
+| **難易度** | `difficultySlider` (`Slider`) | `RuntimeControlPanel` 内で採点難易度を設定 |
+| **リアルタイム採点** | `realtimeScoreToggle` (`Toggle`) | リアルタイム採点のON/OFF |
+| **採点間隔** | `realtimeIntervalSlider` (`Slider`) | リアルタイム採点の更新間隔設定 |
+| **結果受取イベント** | — | `targetCanvas.OnScoreEvaluated += HandleScoreEvaluated` |
